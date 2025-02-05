@@ -730,6 +730,7 @@ dependencies = [
  "lazy_static",
  "lopdf",
  "qpdf",
+ "regex",
  "serde",
  "serde_json",
  "tokio",
