@@ -6,6 +6,7 @@ use qpdf::QPdf;
 use lopdf::Document;
 use regex::Regex;
 use std::fs;
+use std::error::Error;
 
 #[derive(Deserialize, Debug)]
 struct ShiftData {
@@ -31,9 +32,9 @@ fn index_trip_sheets(pdf_path: &str, output_path: &str) -> Result<(), Box<dyn Er
 
     // Iterate over all pages in the PDF.
     // `get_pages` returns a map of page numbers to their internal object IDs.
-    for (page_num, &page_id) in doc.get_pages().iter() {
+    for (page_num, _) in doc.get_pages().iter() {
         // Extract text from the current page.
-        let text = doc.extract_text(&[page_id]).unwrap_or_default();
+        let text = doc.extract_text(&[*page_num]).unwrap_or_default();
 
         // Search for matches in the page text.
         for cap in re.captures_iter(&text) {
@@ -96,6 +97,7 @@ async fn get_shift(
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     // Load shift data
+    index_trip_sheets(PDF_PATH, "trip_index.json").unwrap();
     let shifts = load_shifts().expect("Failed to load shifts");
 
     let app_state = web::Data::new(ShiftMap { shifts });
