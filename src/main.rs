@@ -1,14 +1,17 @@
 // main.rs
 use actix_web::{get, web, App, HttpResponse, HttpServer, Responder};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use qpdf::QPdf;
 use lopdf::Document;
 use regex::Regex;
 use std::fs;
 use std::error::Error;
 
-#[derive(Deserialize, Debug)]
+const PDF_PATH: &str = "./Dienstboek/Dienstboekjes_Gecombineerd.pdf";
+
+#[derive(Deserialize, Serialize, Debug)]
 struct ShiftData {
     pages: Vec<u32>,
 }
@@ -18,17 +21,15 @@ struct ShiftMap {
 }
 
 
-const PDF_PATH: &str = "./Dienstboek/Dienstboekjes_Gecombineerd.pdf";
-
 /// This function loads the PDF, searches for the trip number on each page,
 /// and writes the index to a JSON file.
-fn index_trip_sheets(pdf_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
+fn index_trip_sheets(pdf_path: PathBuf, output_path: &str) -> Result<(), Box<dyn Error>> {
     // Load the PDF document.
     let doc = Document::load(pdf_path)?;
 
     // Define a regex pattern that finds "Dienst" followed by a trip number.
     let re = Regex::new(r"Dienst\s*(\b[A-Z]{1,2} \d{4}\b)")?;
-    let mut index: HashMap<String, Vec<u32>> = HashMap::new();
+    let mut index: HashMap<String, ShiftData> = HashMap::new();
 
     // Iterate over all pages in the PDF.
     // `get_pages` returns a map of page numbers to their internal object IDs.
@@ -43,8 +44,8 @@ fn index_trip_sheets(pdf_path: &str, output_path: &str) -> Result<(), Box<dyn Er
 
             // Add the page number to the index for this trip number.
             index.entry(trip_number)
-                .and_modify(|pages| pages.push(*page_num))
-                .or_insert(vec![*page_num]);
+                .and_modify(|pages| pages.pages.push(*page_num))
+                .or_insert(ShiftData{pages: vec![*page_num]});
         }
     }
 
@@ -80,7 +81,7 @@ async fn get_shift(
     let pdf = QPdf::read(PDF_PATH).unwrap(); 
     let shift_data = match data.shifts.get(&normalized) {
         Some(data) => data,
-        None => return HttpResponse::NotFound().finish(),
+        None => return HttpResponse::NotFound().body("<h1>Deze dienst is niet gevonden!</h1>"),
     };
     let new_doc = QPdf::empty();
     
@@ -94,10 +95,22 @@ async fn get_shift(
         .body(bytes)
 }
 
+fn load_directory(path: PathBuf) -> PathBuf {
+    let paths = fs::read_dir(&path).unwrap();
+    if paths.into_iter().count() == 1{
+        fs::read_dir(path).unwrap().last().unwrap().unwrap().path()
+    }
+    else {
+        panic!("Er moet EEN item in het dienstboekje folder zitten")
+    }
+
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     // Load shift data
-    index_trip_sheets(PDF_PATH, "trip_index.json").unwrap();
+    let pdf_path = load_directory(PathBuf::from("./Dienstboek"));
+    index_trip_sheets(pdf_path, "trip_index.json").unwrap();
     let shifts = load_shifts().expect("Failed to load shifts");
 
     let app_state = web::Data::new(ShiftMap { shifts });
