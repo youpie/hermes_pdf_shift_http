@@ -1,0 +1,8 @@
+name: hermes_pdf_shift_http
+services:
+  hermes_pdf_shift_http:
+    image: localhost/hermes_pdf_shift_http
+    ports:
+      - 8080:8080
+    volumes:
+      - ./Dienstboek:/usr/src/hermes_pdf_shift_http/Dienstboek/
