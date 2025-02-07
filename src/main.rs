@@ -78,6 +78,7 @@ async fn get_shift(
 ) -> impl Responder {
     // Normalize input by removing spaces
     let normalized = shift_number.replace(' ', "");
+    let normalized = normalized.to_uppercase();
     let pdf = QPdf::read(PDF_PATH).unwrap(); 
     let shift_data = match data.shifts.get(&normalized) {
         Some(data) => data,
