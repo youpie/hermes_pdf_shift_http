@@ -9,16 +9,30 @@ use regex::Regex;
 use std::fs;
 use std::error::Error;
 
+pub mod shift_indexing;
+
 const PDF_PATH: &str = "./Dienstboek/Dienstboekjes_Gecombineerd.pdf";
+
+pub type GenResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Deserialize, Serialize, Debug)]
 struct ShiftData {
     pages: Vec<u32>,
+    // pdf_id: u32
 }
 
 struct ShiftMap {
     shifts: HashMap<String, ShiftData>,
 }
+
+struct PDFMap {
+    pdf_id: HashMap<u32, u32>
+}
+
+// struct PDFSheet {
+//     name: String,
+//     valid_date_start: chrono::DateTime<>
+// }
 
 
 /// This function loads the PDF, searches for the trip number on each page,
@@ -111,9 +125,9 @@ fn load_directory(path: PathBuf) -> PathBuf {
 async fn main() -> std::io::Result<()> {
     // Load shift data
     let pdf_path = load_directory(PathBuf::from("./Dienstboek"));
-    index_trip_sheets(pdf_path, "trip_index.json").unwrap();
+    index_trip_sheets(pdf_path.clone(), "trip_index.json").unwrap();
     let shifts = load_shifts().expect("Failed to load shifts");
-
+    shift_indexing::read_pdf_stream(pdf_path).unwrap();
     let app_state = web::Data::new(ShiftMap { shifts });
 
     HttpServer::new(move || {

@@ -1,0 +1,4 @@
+- [ ] Load pdf's based on date in name
+    - [ ] give every file in the folder an ID
+    - [ ] Check the system date every request?
+- [ ] Inspect every pdf to deconstruct it
