@@ -206,8 +206,8 @@ async fn get_shift(shift_number: web::Path<String>) -> impl Responder {
 
 fn load_pdf_and_index(file_paths: Vec<PathBuf>) {
     warn!("REMOVING {}",COLLECTION_PATH);
-    fs::remove_dir_all(COLLECTION_PATH).unwrap();
-    fs::create_dir(COLLECTION_PATH).unwrap();
+    let _ = fs::remove_dir_all(COLLECTION_PATH);
+    let _ = fs::create_dir(COLLECTION_PATH);
     let _ = file_paths.iter()
         .enumerate()
         .map(|path| index_trip_sheets(path.1.into(), path.0).unwrap())
