@@ -1,4 +1,5 @@
 use actix_web::{get, web, App, HttpResponse, HttpServer, Responder};
+use chrono::naive;
 use lopdf::Document;
 use qpdf::QPdf;
 use regex::Regex;
@@ -12,6 +13,8 @@ use std::sync::LazyLock;
 use std::sync::RwLock;
 use time::macros::format_description;
 use time::{Date, OffsetDateTime};
+use walkdir::WalkDir;
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 extern crate pretty_env_logger;
 #[macro_use]
@@ -20,6 +23,7 @@ extern crate log;
 pub mod shift_indexing;
 
 const PDF_PATH: &str = "./Dienstboek/";
+const COLLECTION_PATH: &str = "pdf_collection";
 
 static NEW_TIMETABLE_DATE: LazyLock<RwLock<Option<Date>>> = LazyLock::new(|| RwLock::new(None));
 static CURRENT_COLLECTION: LazyLock<RwLock<PdfCollection>> =
@@ -31,10 +35,6 @@ pub type GenResult<T> = Result<T, Box<dyn std::error::Error>>;
 struct ShiftData {
     pages: Vec<u32>,
     file_id: usize,
-}
-
-struct ShiftMap {
-    shifts: HashMap<String, ShiftData>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -54,11 +54,6 @@ impl PdfCollection {
     }
 }
 
-// impl Default for Date {
-//     fn default() -> Self {
-//
-//     }
-// }
 
 // Load every PDF and group them
 fn index_trip_sheets(pdf_path: PathBuf, file_id: usize) -> Result<(), Box<dyn Error>> {
@@ -93,10 +88,10 @@ fn index_trip_sheets(pdf_path: PathBuf, file_id: usize) -> Result<(), Box<dyn Er
     let date_format = format_description!["[day]-[month]-[year]"];
     let valid_from_string = read_pdf_stream(pdf_path.clone())?;
     let valid_from_day = time::Date::parse(&valid_from_string, date_format).unwrap();
-    let output_path = PathBuf::from(format!("./pdf_collection/{}", valid_from_string));
+    let output_path = PathBuf::from(format!("{}/{}",COLLECTION_PATH, valid_from_string));
     let pdf_filename = pdf_path.file_name().unwrap().to_string_lossy();
     let pdf_collection_output: PdfCollection;
-    if let Ok(file) = fs::read(format!("./pdf_collection/{}", valid_from_string)) {
+    if let Ok(file) = fs::read(format!("{}/{}",COLLECTION_PATH, valid_from_string)) {
         let mut pdf_collection: PdfCollection = serde_json::from_slice(&file)?;
         pdf_collection
             .files
@@ -118,21 +113,6 @@ fn index_trip_sheets(pdf_path: PathBuf, file_id: usize) -> Result<(), Box<dyn Er
     fs::write(&output_path, index_json)?;
     Ok(())
 }
-
-fn load_shifts() -> Result<HashMap<String, ShiftData>, Box<dyn std::error::Error>> {
-    let data = std::fs::read_to_string("./trip_index.json")?;
-    let raw_shifts: HashMap<String, ShiftData> = serde_json::from_str(&data)?;
-
-    // Normalize keys by removing spaces
-    let shifts = raw_shifts
-        .into_iter()
-        .map(|(k, v)| (k.replace(' ', ""), v))
-        .collect();
-
-    Ok(shifts)
-}
-
-// let current_date = OffsetDateTime::now_utc();
 
 // load all pdf_collection files. And determine which one is current
 // Also if it exists, save the date of when it gets invalidated (Next timetable)
@@ -168,7 +148,19 @@ async fn get_shift(shift_number: web::Path<String>) -> impl Responder {
     // Normalize input by removing spaces
     let normalized_shift_number = shift_number.replace(' ', "");
     let normalized_shift_number = normalized_shift_number.to_uppercase();
-    let next_timetable_date = *NEW_TIMETABLE_DATE.read().unwrap();
+    let mut next_timetable_date = *NEW_TIMETABLE_DATE.read().unwrap();
+    if normalized_shift_number == "REFRESH".to_string(){
+        let mut files = Vec::new();
+
+        for entry in WalkDir::new("Dienstboek").into_iter().filter_map(Result::ok) {
+            let path = entry.path();
+            if path.is_file() {  // Skip directories
+                files.push(path.display().to_string());
+            }
+        }
+        load_pdf_and_index(files);
+        return HttpResponse::Accepted().body("Shifts sucessfully indexed");
+    }
     let mut current_collection = match CURRENT_COLLECTION.read() {
         Ok(value) => value.clone(),
         Err(err) => {
@@ -182,8 +174,7 @@ async fn get_shift(shift_number: web::Path<String>) -> impl Responder {
         if OffsetDateTime::now_utc().date() >= new_timetable_date {
             warn!("Loading new timetable");
             let _ = new_timetable_date;
-            let new_timetable_date;
-            (current_collection,new_timetable_date) = get_valid_timetable().unwrap();
+            (current_collection,next_timetable_date) = get_valid_timetable().unwrap();
         }
     }
     
@@ -215,16 +206,48 @@ async fn get_shift(shift_number: web::Path<String>) -> impl Responder {
         .body(bytes)
 }
 
+fn load_pdf_and_index(file_paths: Vec<String>) {
+    warn!("REMOVING {}",COLLECTION_PATH);
+    fs::remove_dir_all(COLLECTION_PATH).unwrap();
+    fs::create_dir(COLLECTION_PATH).unwrap();
+    let _ = file_paths.iter()
+        .enumerate()
+        .map(|path| index_trip_sheets(path.1.into(), path.0).unwrap())
+        .collect::<Vec<_>>();
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     pretty_env_logger::init();
     // Load shift data
     info!("Indexing trip sheets");
-    let _ = fs::read_dir("Dienstboek")?
-        .into_iter()
-        .enumerate()
-        .map(|path| index_trip_sheets(path.1.unwrap().path(), path.0).unwrap())
-        .collect::<Vec<_>>();
+    let mut files = Vec::new();
+
+    for entry in WalkDir::new("Dienstboek").into_iter().filter_map(Result::ok) {
+        let path = entry.path();
+        if path.is_file() {  // Skip directories
+            files.push(path.display().to_string());
+        }
+    }
+    // Get the hash of all files in the folder. If anything changes, the hash changes and so it will reindex
+    let mut s = DefaultHasher::new();
+    files.hash(&mut s);
+    let current_hash = s.finish();
+    let previous_hash_option = fs::read("pdf_hash").ok().and_then(|bytes| Some(u64::from_le_bytes(bytes.try_into().unwrap())));
+    if let Some(previous_hash) = previous_hash_option  {
+        if previous_hash != current_hash {
+            warn!("Hash is changed, reindexing files");
+            load_pdf_and_index(files);
+        }
+        else{
+            info!("Hash is the same, so wont reindex");
+        }
+    }
+    else{
+        error!("Could not find previous hash, reindexing");
+        load_pdf_and_index(files);
+    }
+    let _ = fs::write("pdf_hash", current_hash.to_le_bytes());
     let current_timetable = get_valid_timetable().unwrap();
     *CURRENT_COLLECTION.write().unwrap() = current_timetable.0;
     *NEW_TIMETABLE_DATE.write().unwrap() = current_timetable.1;
