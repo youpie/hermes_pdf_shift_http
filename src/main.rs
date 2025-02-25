@@ -14,15 +14,16 @@ use time::macros::format_description;
 use time::{Date, OffsetDateTime};
 
 extern crate pretty_env_logger;
-#[macro_use] extern crate log;
-
+#[macro_use]
+extern crate log;
 
 pub mod shift_indexing;
 
 const PDF_PATH: &str = "./Dienstboek/";
 
 static NEW_TIMETABLE_DATE: LazyLock<RwLock<Option<Date>>> = LazyLock::new(|| RwLock::new(None));
-static CURRENT_COLLECTION: LazyLock<RwLock<PdfCollection>> = LazyLock::new(|| RwLock::new(PdfCollection::new()));
+static CURRENT_COLLECTION: LazyLock<RwLock<PdfCollection>> =
+    LazyLock::new(|| RwLock::new(PdfCollection::new()));
 
 pub type GenResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -36,11 +37,10 @@ struct ShiftMap {
     shifts: HashMap<String, ShiftData>,
 }
 
-
 #[derive(Deserialize, Serialize, Debug, Clone)]
 struct PdfCollection {
     valid_from: Date,
-    files: HashMap<usize,String>,
+    files: HashMap<usize, String>,
     pages: HashMap<String, ShiftData>,
 }
 
@@ -91,30 +91,29 @@ fn index_trip_sheets(pdf_path: PathBuf, file_id: usize) -> Result<(), Box<dyn Er
         }
     }
     let date_format = format_description!["[day]-[month]-[year]"];
-    let valid_from_string = read_pdf_stream(pdf_path.clone())?;    
+    let valid_from_string = read_pdf_stream(pdf_path.clone())?;
     let valid_from_day = time::Date::parse(&valid_from_string, date_format).unwrap();
-
+    let output_path = PathBuf::from(format!("./pdf_collection/{}", valid_from_string));
     let pdf_filename = pdf_path.file_name().unwrap().to_string_lossy();
     let pdf_collection_output: PdfCollection;
     if let Ok(file) = fs::read(format!("./pdf_collection/{}", valid_from_string)) {
         let mut pdf_collection: PdfCollection = serde_json::from_slice(&file)?;
-        pdf_collection.files.insert(file_id,pdf_filename.to_string());
+        pdf_collection
+            .files
+            .insert(file_id, pdf_filename.to_string());
         pdf_collection.pages.extend(index);
         pdf_collection_output = pdf_collection;
         info!("Extending existing collection {:?}", &output_path);
-
     } else {
         pdf_collection_output = PdfCollection {
             valid_from: valid_from_day,
-            files: HashMap::from([(file_id,pdf_filename.to_string())]),
+            files: HashMap::from([(file_id, pdf_filename.to_string())]),
             pages: index,
         };
         info!("Writing new collection {:?}", &output_path);
-
     }
 
     // Serialize the index into pretty JSON.
-    let output_path = PathBuf::from(format!("./pdf_collection/{}", valid_from_string));
     let index_json = serde_json::to_string_pretty(&pdf_collection_output)?;
     fs::write(&output_path, index_json)?;
     Ok(())
@@ -157,41 +156,61 @@ fn get_valid_timetable() -> GenResult<(PdfCollection, Option<Date>)> {
             next_timetable = Some(current_collection_file.valid_from);
         }
     }
-
+    info!("writing new timetable {:?}", &next_timetable);
     fs::write("new_timetable", serde_json::to_string(&next_timetable)?)?;
-    *NEW_TIMETABLE_DATE.write().unwrap() = next_timetable;
+    //*NEW_TIMETABLE_DATE.write().unwrap() = next_timetable;
     Ok((latest_collection, next_timetable))
 }
 
 #[get("/shift/{shift_number}")]
-async fn get_shift(
-    shift_number: web::Path<String>,
-) -> impl Responder {
+async fn get_shift(shift_number: web::Path<String>) -> impl Responder {
     info!("Got request for {shift_number}");
     // Normalize input by removing spaces
     let normalized_shift_number = shift_number.replace(' ', "");
     let normalized_shift_number = normalized_shift_number.to_uppercase();
+    let mut current_collection = match CURRENT_COLLECTION.read() {
+        Ok(value) => value.clone(),
+        Err(err) => {
+            return HttpResponse::InternalServerError().body(format!(
+                "<h1> Sorry, something went wrong, please try again </h1>\nerror: {}",
+                err.to_string()
+            ))
+        }
+    };
     if let Some(new_timetable_date) = *NEW_TIMETABLE_DATE.read().unwrap() {
-        if OffsetDateTime::now_utc().date() >= new_timetable_date  {
+        if OffsetDateTime::now_utc().date() >= new_timetable_date {
             warn!("Loading new timetable");
             // let _ = fs::read_dir("Dienstboek").unwrap()
             //     .into_iter()
             //     .enumerate()
             //     .map(|path| index_trip_sheets(path.1.unwrap().path(), path.0).unwrap())
             //     .collect::<Vec<_>>();
-            *CURRENT_COLLECTION.write().unwrap() = get_valid_timetable().unwrap().0;
-
+            let _ = new_timetable_date;
+            let new_timetable_date;
+            (current_collection,new_timetable_date) = get_valid_timetable().unwrap();
+            info!("a");
+            *NEW_TIMETABLE_DATE.write().unwrap() = new_timetable_date;
+            info!("b");
         }
     }
-    let current_collection = CURRENT_COLLECTION.read().unwrap().clone();
-    info!("Current timetable: {:?}",current_collection.files);
+    
+    info!("Current timetable: {:?}, next date {:?}", current_collection.files,*NEW_TIMETABLE_DATE.read().unwrap());
     let (shift_path, shift_page) = match current_collection.pages.get(&normalized_shift_number) {
-        Some(data) => {info!("found shift at file {} page {:?}",&data.file_id,&data.pages);(current_collection.files.get(&data.file_id).unwrap(), data.pages.clone())},
+        Some(data) => {
+            info!(
+                "found shift at file {} page {:?}",
+                &data.file_id, &data.pages
+            );
+            (
+                current_collection.files.get(&data.file_id).unwrap(),
+                data.pages.clone(),
+            )
+        }
         None => return HttpResponse::NotFound().body("<h1>Deze dienst is niet gevonden!</h1>"),
     };
     let pdf = QPdf::read(format!("{PDF_PATH}/{shift_path}")).unwrap();
     let new_doc = QPdf::empty();
-
+    *CURRENT_COLLECTION.write().unwrap() = current_collection;
     // Keep only the pages we want
     let extracted_pages = pdf.get_page(*shift_page.last().unwrap() - 1).unwrap();
     new_doc.add_page(extracted_pages, true).unwrap();
@@ -214,6 +233,8 @@ async fn main() -> std::io::Result<()> {
         .collect::<Vec<_>>();
     let current_timetable = get_valid_timetable().unwrap();
     *CURRENT_COLLECTION.write().unwrap() = current_timetable.0;
+    *NEW_TIMETABLE_DATE.write().unwrap() = current_timetable.1;
+    println!("timetable: {}",*NEW_TIMETABLE_DATE.read().unwrap());
     //let shifts = load_shifts().expect("Failed to load shifts");
     //shift_indexing::read_pdf_stream(pdf_path).unwrap();
     //let app_state = web::Data::new(current_timetable.0);
