@@ -1,5 +1,4 @@
 use actix_web::{get, web, App, HttpResponse, HttpServer, Responder};
-use chrono::naive;
 use lopdf::Document;
 use qpdf::QPdf;
 use regex::Regex;
@@ -22,7 +21,7 @@ extern crate log;
 
 pub mod shift_indexing;
 
-const PDF_PATH: &str = "./Dienstboek/";
+//const PDF_PATH: &str = "Dienstboek";
 const COLLECTION_PATH: &str = "pdf_collection";
 
 static NEW_TIMETABLE_DATE: LazyLock<RwLock<Option<Date>>> = LazyLock::new(|| RwLock::new(None));
@@ -89,20 +88,19 @@ fn index_trip_sheets(pdf_path: PathBuf, file_id: usize) -> Result<(), Box<dyn Er
     let valid_from_string = read_pdf_stream(pdf_path.clone())?;
     let valid_from_day = time::Date::parse(&valid_from_string, date_format).unwrap();
     let output_path = PathBuf::from(format!("{}/{}",COLLECTION_PATH, valid_from_string));
-    let pdf_filename = pdf_path.file_name().unwrap().to_string_lossy();
     let pdf_collection_output: PdfCollection;
     if let Ok(file) = fs::read(format!("{}/{}",COLLECTION_PATH, valid_from_string)) {
         let mut pdf_collection: PdfCollection = serde_json::from_slice(&file)?;
         pdf_collection
             .files
-            .insert(file_id, pdf_filename.to_string());
+            .insert(file_id, pdf_path.to_str().unwrap().to_string());
         pdf_collection.pages.extend(index);
         pdf_collection_output = pdf_collection;
         info!("Extending existing collection {:?}", &output_path);
     } else {
         pdf_collection_output = PdfCollection {
             valid_from: valid_from_day,
-            files: HashMap::from([(file_id, pdf_filename.to_string())]),
+            files: HashMap::from([(file_id, pdf_path.to_str().unwrap().to_string())]),
             pages: index,
         };
         info!("Writing new collection {:?}", &output_path);
@@ -155,7 +153,7 @@ async fn get_shift(shift_number: web::Path<String>) -> impl Responder {
         for entry in WalkDir::new("Dienstboek").into_iter().filter_map(Result::ok) {
             let path = entry.path();
             if path.is_file() {  // Skip directories
-                files.push(path.display().to_string());
+                files.push(path.to_path_buf());
             }
         }
         load_pdf_and_index(files);
@@ -192,7 +190,7 @@ async fn get_shift(shift_number: web::Path<String>) -> impl Responder {
         }
         None => return HttpResponse::NotFound().body("<h1>Deze dienst is niet gevonden!</h1>"),
     };
-    let pdf = QPdf::read(format!("{PDF_PATH}/{shift_path}")).unwrap();
+    let pdf = QPdf::read(shift_path).unwrap();
     let new_doc = QPdf::empty();
     *CURRENT_COLLECTION.write().unwrap() = current_collection;
     *NEW_TIMETABLE_DATE.write().unwrap() = next_timetable_date;
@@ -206,7 +204,7 @@ async fn get_shift(shift_number: web::Path<String>) -> impl Responder {
         .body(bytes)
 }
 
-fn load_pdf_and_index(file_paths: Vec<String>) {
+fn load_pdf_and_index(file_paths: Vec<PathBuf>) {
     warn!("REMOVING {}",COLLECTION_PATH);
     fs::remove_dir_all(COLLECTION_PATH).unwrap();
     fs::create_dir(COLLECTION_PATH).unwrap();
@@ -222,11 +220,10 @@ async fn main() -> std::io::Result<()> {
     // Load shift data
     info!("Indexing trip sheets");
     let mut files = Vec::new();
-
-    for entry in WalkDir::new("Dienstboek").into_iter().filter_map(Result::ok) {
+    for entry in WalkDir::new("Dienstboek").into_iter().filter_map(|e| e.ok()) {
         let path = entry.path();
-        if path.is_file() {  // Skip directories
-            files.push(path.display().to_string());
+        if path.is_file(){
+            files.push(path.to_path_buf());
         }
     }
     // Get the hash of all files in the folder. If anything changes, the hash changes and so it will reindex
