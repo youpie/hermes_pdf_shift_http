@@ -193,31 +193,39 @@ fn job_creator(
             job_drive_type = Some(JobDrivingType::Lijn(lijn_parse));
         } else {
             job_drive_type = None;
-            let lijn_first_word = lijn_string.split_whitespace().next().unwrap().to_lowercase();
-            let first_word_str = lijn_first_word.as_str();
-            let message = match lijn_first_word.as_str() {
-                "neem" => JobMessageType::NeemBus {
-                    bustype: lijn_string.replace("neem ", ""),
-                },
-                "bus" => JobMessageType::BusOp {
-                    lijn: lijn_string.replace("Bus op lijn ", "").parse()?,
-                },
-                "pod" => JobMessageType::NeemBus {
-                    bustype: lijn_string,
-                },
-                "pass" => {
-                    let lijn_string_split = lijn_string.replace("Pass met ", "");
-                    let mut dienst_omloop_split = lijn_string_split.split_whitespace().next().unwrap().split('/');
-                    JobMessageType::Passagieren {
-                        dienstnummer: dienst_omloop_split.next().unwrap().parse().unwrap(),
-                        omloop: dienst_omloop_split.next().unwrap().to_string(),
-                    }
-                }
-                "meenemen" => JobMessageType::Other(lijn_string),
-                _ => JobMessageType::Other(lijn_string),
+            let message = match message_type_finder(lijn_string.clone()){
+                Some(message) => message,
+                None => JobMessageType::Other(lijn_string)
             };
             job_type = message;
         }
     }
     Ok(())
+}
+
+fn message_type_finder(lijn_string: String) -> Option<JobMessageType>{
+    let lijn_first_word = lijn_string.split_whitespace().next()?.to_lowercase();
+    let first_word_str = lijn_first_word.as_str();
+    let message = match lijn_first_word.as_str() {
+        "neem" => JobMessageType::NeemBus {
+            bustype: lijn_string.replace("neem ", ""),
+        },
+        "bus" => JobMessageType::BusOp {
+            lijn: lijn_string.replace("Bus op lijn ", "").parse().ok()?,
+        },
+        "pod" => JobMessageType::NeemBus {
+            bustype: lijn_string,
+        },
+        "pass" => {
+            let lijn_string_split = lijn_string.replace("Pass met ", "");
+            let mut dienst_omloop_split = lijn_string_split.split_whitespace().next()?.split('/');
+            JobMessageType::Passagieren {
+                dienstnummer: dienst_omloop_split.next()?.parse().ok()?,
+                omloop: dienst_omloop_split.next()?.to_string(),
+            }
+        }
+        "meenemen" => JobMessageType::Other(lijn_string),
+        _ => JobMessageType::Other(lijn_string),
+    };
+    Some(message)
 }
