@@ -1,4 +1,4 @@
-FROM rust:1.81
+FROM rust:1.84
 
 RUN apt update
 RUN apt-get install libqpdf-dev clang -y && rm -rf /var/lib/apt/lists/*
