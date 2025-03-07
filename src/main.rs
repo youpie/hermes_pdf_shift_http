@@ -91,9 +91,9 @@ fn index_trip_sheets(pdf_path: PathBuf, file_id: usize) -> Result<(), Box<dyn Er
                 });
         }
     }
-    let date_format = format_description!["[day]-[month]-[year]"];
-    let valid_from_string = read_pdf_stream(pdf_path.clone())?;
-    let valid_from_day = time::Date::parse(&valid_from_string, date_format).unwrap();
+    let valid_from_day = read_pdf_stream(pdf_path.clone()).unwrap().first().unwrap().starting_date;
+    let valid_from_string = valid_from_day.format(DATE_FORMAT).unwrap();
+
     let output_path = PathBuf::from(format!("{}/{}",COLLECTION_PATH, valid_from_string));
     let pdf_collection_output: PdfTimetableCollection;
     if let Ok(file) = fs::read(format!("{}/{}",COLLECTION_PATH, valid_from_string)) {
@@ -279,19 +279,20 @@ async fn main() -> std::io::Result<()> {
     files.hash(&mut s);
     let current_hash = s.finish();
     let previous_hash_option = fs::read("pdf_hash").ok().and_then(|bytes| Some(u64::from_le_bytes(bytes.try_into().unwrap())));
-    if let Some(previous_hash) = previous_hash_option  {
-        if previous_hash != current_hash {
-            warn!("Hash is changed, reindexing files");
-            load_pdf_and_index(files);
-        }
-        else{
-            info!("Hash is the same, so wont reindex");
-        }
-    }
-    else{
-        error!("Could not find previous hash, reindexing");
-        load_pdf_and_index(files);
-    }
+    // if let Some(previous_hash) = previous_hash_option  {
+    //     if previous_hash != current_hash {
+    //         warn!("Hash is changed, reindexing files");
+    //         load_pdf_and_index(files);
+    //     }
+    //     else{
+    //         info!("Hash is the same, so wont reindex");
+    //     }
+    // }
+    // else{
+    //     error!("Could not find previous hash, reindexing");
+    //     load_pdf_and_index(files);
+    // }
+    load_pdf_and_index(files);
     let _ = fs::write("pdf_hash", current_hash.to_le_bytes());
     let current_timetable = get_valid_timetables(None).unwrap();
     *CURRENT_TIMETABLE.write().unwrap() = current_timetable.1;
