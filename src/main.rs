@@ -56,17 +56,9 @@ impl PdfTimetableCollection {
     }
 }
 
-
-// Every timetable has its own ID
-#[derive(Deserialize, Serialize, Debug, Default)]
-struct TimetableID{
-    timetable_ids: HashMap<usize, String>
-}
-
-// Every shift has a timetable ID assigned, which corresponds to the last valid timetable which has that shift
-#[derive(Deserialize, Serialize, Debug, Default)]
-struct GlobalShifts{
-    shift: HashMap<String, usize>
+#[derive(Deserialize)]
+struct ShiftQuery {
+    date: Option<String>, // Optional date query parameter
 }
 
 // Load every PDF and group them
@@ -129,9 +121,12 @@ fn index_trip_sheets(pdf_path: PathBuf, file_id: usize) -> Result<(), Box<dyn Er
 
 // load all pdf_collection files. And determine which one is current
 // Also if it exists, save the date of when it gets invalidated (Next timetable)
-fn get_valid_timetables() -> GenResult<(Vec<Date>,PdfTimetableCollection, Option<Date>)> {
+fn get_valid_timetables(date: Option<Date>) -> GenResult<(Vec<Date>,PdfTimetableCollection, Option<Date>)> {
     let collections = fs::read_dir("pdf_collection")?;
-    let current_date = OffsetDateTime::now_utc().date();
+    let current_date = match date {
+        Some(date) => date,
+        None => OffsetDateTime::now_utc().date()
+    };
     let mut latest_collection = PdfTimetableCollection::new();
     let mut next_timetable: Option<Date> = None;
     let mut valid_timetables: Vec<Date> = vec![];
@@ -185,9 +180,13 @@ fn find_shift(shift_number: String, valid_timetables: Vec<Date>, most_recent_tim
 }
 
 #[get("/shift/{shift_number}")]
-async fn get_shift(shift_number: web::Path<String>) -> impl Responder {
+async fn get_shift(shift_number: web::Path<String>,query: web::Query<ShiftQuery>,) -> impl Responder {
     info!("Got request for {}",shift_number);
-    //if date.is_some() {warn!("Also recieved date {:?}",date);}
+    let custom_date = query.date.is_some();
+    let current_date = query.date
+        .as_ref()
+        .and_then(|date_string| Date::parse(date_string, DATE_FORMAT).ok())
+        .unwrap_or_else(|| OffsetDateTime::now_utc().date());
     // Normalize input by removing spaces
     let normalized_shift_number = shift_number.replace(' ', "");
     let normalized_shift_number = normalized_shift_number.to_uppercase();
@@ -215,15 +214,20 @@ async fn get_shift(shift_number: web::Path<String>) -> impl Responder {
     };
     let mut valid_timetables = VALID_TIMETABLES.read().unwrap().clone();
     // If new current date = new timetable date. Reload the timetables
-    if let Some(new_timetable_date) = *NEW_TIMETABLE_DATE.read().unwrap() {
-        if OffsetDateTime::now_utc().date() >= new_timetable_date {
+    if let Some(new_timetable_date) = next_timetable_date {
+        if current_date >= new_timetable_date{
             warn!("Loading new timetable");
             let _ = new_timetable_date;
-            (valid_timetables,current_timetable,next_timetable_date) = get_valid_timetables().unwrap();
-            *CURRENT_TIMETABLE.write().unwrap() = current_timetable.clone();
-            *NEW_TIMETABLE_DATE.write().unwrap() = next_timetable_date.clone();
-            *VALID_TIMETABLES.write().unwrap() = valid_timetables.clone();
+            (valid_timetables,current_timetable,next_timetable_date) = get_valid_timetables(Some(current_date)).unwrap();
+            if !custom_date{
+                *CURRENT_TIMETABLE.write().unwrap() = current_timetable.clone();
+                *NEW_TIMETABLE_DATE.write().unwrap() = next_timetable_date.clone();
+                *VALID_TIMETABLES.write().unwrap() = valid_timetables.clone();
+            }
         }
+    }
+    else if custom_date {
+        (valid_timetables,current_timetable,_) = get_valid_timetables(Some(current_date)).unwrap();
     }
     
     info!("Current timetable: {:?}, next date {:?}", current_timetable.files,*NEW_TIMETABLE_DATE.read().unwrap());
@@ -289,7 +293,7 @@ async fn main() -> std::io::Result<()> {
         load_pdf_and_index(files);
     }
     let _ = fs::write("pdf_hash", current_hash.to_le_bytes());
-    let current_timetable = get_valid_timetables().unwrap();
+    let current_timetable = get_valid_timetables(None).unwrap();
     *CURRENT_TIMETABLE.write().unwrap() = current_timetable.1;
     *NEW_TIMETABLE_DATE.write().unwrap() = current_timetable.2;
     *VALID_TIMETABLES.write().unwrap() = current_timetable.0;
