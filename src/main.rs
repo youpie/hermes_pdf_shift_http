@@ -14,6 +14,7 @@ use time::macros::format_description;
 use time::{Date, OffsetDateTime};
 use walkdir::WalkDir;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use time::format_description::BorrowedFormatItem;
 
 extern crate pretty_env_logger;
 #[macro_use]
@@ -25,8 +26,10 @@ pub mod shift_indexing;
 const COLLECTION_PATH: &str = "pdf_collection";
 
 static NEW_TIMETABLE_DATE: LazyLock<RwLock<Option<Date>>> = LazyLock::new(|| RwLock::new(None));
-static CURRENT_COLLECTION: LazyLock<RwLock<PdfCollection>> =
-    LazyLock::new(|| RwLock::new(PdfCollection::new()));
+static CURRENT_TIMETABLE: LazyLock<RwLock<PdfTimetableCollection>> =
+    LazyLock::new(|| RwLock::new(PdfTimetableCollection::new()));
+static VALID_TIMETABLES: LazyLock<RwLock<Vec<Date>>> = LazyLock::new(|| RwLock::new(vec![]));
+const DATE_FORMAT: &[BorrowedFormatItem<'_>] = format_description!["[day]-[month]-[year]"];
 
 pub type GenResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -37,13 +40,13 @@ struct ShiftData {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
-struct PdfCollection {
+struct PdfTimetableCollection {
     valid_from: Date,
     files: HashMap<usize, String>,
     pages: HashMap<String, ShiftData>,
 }
 
-impl PdfCollection {
+impl PdfTimetableCollection {
     fn new() -> Self {
         Self {
             valid_from: Date::from_iso_week_date(2000, 20, time::Weekday::Monday).unwrap(),
@@ -53,6 +56,18 @@ impl PdfCollection {
     }
 }
 
+
+// Every timetable has its own ID
+#[derive(Deserialize, Serialize, Debug, Default)]
+struct TimetableID{
+    timetable_ids: HashMap<usize, String>
+}
+
+// Every shift has a timetable ID assigned, which corresponds to the last valid timetable which has that shift
+#[derive(Deserialize, Serialize, Debug, Default)]
+struct GlobalShifts{
+    shift: HashMap<String, usize>
+}
 
 // Load every PDF and group them
 fn index_trip_sheets(pdf_path: PathBuf, file_id: usize) -> Result<(), Box<dyn Error>> {
@@ -88,9 +103,9 @@ fn index_trip_sheets(pdf_path: PathBuf, file_id: usize) -> Result<(), Box<dyn Er
     let valid_from_string = read_pdf_stream(pdf_path.clone())?;
     let valid_from_day = time::Date::parse(&valid_from_string, date_format).unwrap();
     let output_path = PathBuf::from(format!("{}/{}",COLLECTION_PATH, valid_from_string));
-    let pdf_collection_output: PdfCollection;
+    let pdf_collection_output: PdfTimetableCollection;
     if let Ok(file) = fs::read(format!("{}/{}",COLLECTION_PATH, valid_from_string)) {
-        let mut pdf_collection: PdfCollection = serde_json::from_slice(&file)?;
+        let mut pdf_collection: PdfTimetableCollection = serde_json::from_slice(&file)?;
         pdf_collection
             .files
             .insert(file_id, pdf_path.to_str().unwrap().to_string());
@@ -98,7 +113,7 @@ fn index_trip_sheets(pdf_path: PathBuf, file_id: usize) -> Result<(), Box<dyn Er
         pdf_collection_output = pdf_collection;
         info!("Extending existing collection {:?}", &output_path);
     } else {
-        pdf_collection_output = PdfCollection {
+        pdf_collection_output = PdfTimetableCollection {
             valid_from: valid_from_day,
             files: HashMap::from([(file_id, pdf_path.to_str().unwrap().to_string())]),
             pages: index,
@@ -114,35 +129,65 @@ fn index_trip_sheets(pdf_path: PathBuf, file_id: usize) -> Result<(), Box<dyn Er
 
 // load all pdf_collection files. And determine which one is current
 // Also if it exists, save the date of when it gets invalidated (Next timetable)
-fn get_valid_timetable() -> GenResult<(PdfCollection, Option<Date>)> {
+fn get_valid_timetables() -> GenResult<(Vec<Date>,PdfTimetableCollection, Option<Date>)> {
     let collections = fs::read_dir("pdf_collection")?;
     let current_date = OffsetDateTime::now_utc().date();
-    let mut latest_collection = PdfCollection::new();
+    let mut latest_collection = PdfTimetableCollection::new();
     let mut next_timetable: Option<Date> = None;
+    let mut valid_timetables: Vec<Date> = vec![];
     // Loop over all files in the collection folder
     for file_result in collections {
         let file = file_result?;
-        let current_collection_file: PdfCollection =
+        let current_collection_file: PdfTimetableCollection =
             serde_json::from_slice(&fs::read(file.path())?)?;
         //if the current collection date is higher than the last but lower than the system time. Make this the most recent one
         if current_collection_file.valid_from > latest_collection.valid_from
             && current_collection_file.valid_from <= current_date
         {
-            latest_collection = current_collection_file;
+            latest_collection = current_collection_file.clone();
         // this method does not support multiple future timetables.
         } else if current_collection_file.valid_from > current_date {
             next_timetable = Some(current_collection_file.valid_from);
         }
+
+        if current_collection_file.valid_from <= current_date {
+            valid_timetables.push(current_collection_file.valid_from)
+        }
     }
+    valid_timetables.sort_by_key(|value| *value);
+    valid_timetables.reverse();
     info!("writing new timetable {:?}", &next_timetable);
     fs::write("new_timetable", serde_json::to_string(&next_timetable)?)?;
     //*NEW_TIMETABLE_DATE.write().unwrap() = next_timetable;
-    Ok((latest_collection, next_timetable))
+    Ok((valid_timetables,latest_collection, next_timetable))
+}
+
+fn find_shift(shift_number: String, valid_timetables: Vec<Date>, most_recent_timetable: Option<PdfTimetableCollection>) -> Option<(PdfTimetableCollection,ShiftData)>{
+    let mut valid_timetables = valid_timetables;
+    let current_timetable;
+    if let Some(current_timetable_local) = most_recent_timetable{
+        current_timetable = current_timetable_local;
+    }
+    else {
+        let current_old_timetable_date = match valid_timetables.pop() {
+            Some(date) => date,
+            None => return None
+        };
+        current_timetable = match fs::read(format!("{}/{}",COLLECTION_PATH, current_old_timetable_date.format(DATE_FORMAT).ok()?)){
+            Ok(file) => serde_json::from_slice(&file).ok()?,
+            Err(_) => return None
+        }
+    }
+    match current_timetable.clone().pages.get(&shift_number) {
+        Some(shift) => Some((current_timetable,shift.clone())),
+        None => find_shift(shift_number,valid_timetables,None)
+    }
 }
 
 #[get("/shift/{shift_number}")]
 async fn get_shift(shift_number: web::Path<String>) -> impl Responder {
-    info!("Got request for {shift_number}");
+    info!("Got request for {}",shift_number);
+    //if date.is_some() {warn!("Also recieved date {:?}",date);}
     // Normalize input by removing spaces
     let normalized_shift_number = shift_number.replace(' ', "");
     let normalized_shift_number = normalized_shift_number.to_uppercase();
@@ -159,7 +204,7 @@ async fn get_shift(shift_number: web::Path<String>) -> impl Responder {
         load_pdf_and_index(files);
         return HttpResponse::Accepted().body("Shifts sucessfully indexed");
     }
-    let mut current_collection = match CURRENT_COLLECTION.read() {
+    let mut current_timetable = match CURRENT_TIMETABLE.read() {
         Ok(value) => value.clone(),
         Err(err) => {
             return HttpResponse::InternalServerError().body(format!(
@@ -168,32 +213,31 @@ async fn get_shift(shift_number: web::Path<String>) -> impl Responder {
             ))
         }
     };
+    let mut valid_timetables = VALID_TIMETABLES.read().unwrap().clone();
+    // If new current date = new timetable date. Reload the timetables
     if let Some(new_timetable_date) = *NEW_TIMETABLE_DATE.read().unwrap() {
         if OffsetDateTime::now_utc().date() >= new_timetable_date {
             warn!("Loading new timetable");
             let _ = new_timetable_date;
-            (current_collection,next_timetable_date) = get_valid_timetable().unwrap();
+            (valid_timetables,current_timetable,next_timetable_date) = get_valid_timetables().unwrap();
+            *CURRENT_TIMETABLE.write().unwrap() = current_timetable.clone();
+            *NEW_TIMETABLE_DATE.write().unwrap() = next_timetable_date.clone();
+            *VALID_TIMETABLES.write().unwrap() = valid_timetables.clone();
         }
     }
     
-    info!("Current timetable: {:?}, next date {:?}", current_collection.files,*NEW_TIMETABLE_DATE.read().unwrap());
-    let (shift_path, shift_page) = match current_collection.pages.get(&normalized_shift_number) {
+    info!("Current timetable: {:?}, next date {:?}", current_timetable.files,*NEW_TIMETABLE_DATE.read().unwrap());
+    let (shift_path, shift_page) = match find_shift(shift_number.to_string(), valid_timetables, Some(current_timetable)) {
         Some(data) => {
-            info!(
-                "found shift at file {} page {:?}",
-                &data.file_id, &data.pages
-            );
             (
-                current_collection.files.get(&data.file_id).unwrap(),
-                data.pages.clone(),
+                data.0.files.get(&data.1.file_id).unwrap().clone(),
+                data.1.pages.clone(),
             )
         }
         None => return HttpResponse::NotFound().body("<h1>Deze dienst is niet gevonden!</h1>"),
     };
     let pdf = QPdf::read(shift_path).unwrap();
     let new_doc = QPdf::empty();
-    *CURRENT_COLLECTION.write().unwrap() = current_collection;
-    *NEW_TIMETABLE_DATE.write().unwrap() = next_timetable_date;
     // Keep only the pages we want
     let extracted_pages = pdf.get_page(*shift_page.last().unwrap() - 1).unwrap();
     new_doc.add_page(extracted_pages, true).unwrap();
@@ -245,9 +289,10 @@ async fn main() -> std::io::Result<()> {
         load_pdf_and_index(files);
     }
     let _ = fs::write("pdf_hash", current_hash.to_le_bytes());
-    let current_timetable = get_valid_timetable().unwrap();
-    *CURRENT_COLLECTION.write().unwrap() = current_timetable.0;
-    *NEW_TIMETABLE_DATE.write().unwrap() = current_timetable.1;
+    let current_timetable = get_valid_timetables().unwrap();
+    *CURRENT_TIMETABLE.write().unwrap() = current_timetable.1;
+    *NEW_TIMETABLE_DATE.write().unwrap() = current_timetable.2;
+    *VALID_TIMETABLES.write().unwrap() = current_timetable.0;
    // println!("timetable: {}",*NEW_TIMETABLE_DATE.read().unwrap());
     //let shifts = load_shifts().expect("Failed to load shifts");
     //shift_indexing::read_pdf_stream(pdf_path).unwrap();

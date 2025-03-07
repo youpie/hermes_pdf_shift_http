@@ -1,10 +1,10 @@
 [package]
 name = "hermes_pdf_shift_http"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
-qpdf = "0.2.0"
+qpdf = "0.3.3"
 regex = "1"
 actix-web = "4.0"
 lopdf = "0.35"
@@ -14,5 +14,5 @@ tokio = { version = "1.0", features = ["full"] }
 chrono = "0.4.39"
 time = {version = "0.3.37", features = ["serde"]}
 log = "0.4"
-pretty_env_logger = "0.4"
+pretty_env_logger = "0.5.0"
 walkdir = "2.5"
