@@ -4,7 +4,7 @@ use lopdf::Document;
 use regex::Regex;
 use std::path::PathBuf;
 use time::macros::format_description;
-use time::{error, format_description, Time};
+use time::{error, format_description, Date, Time};
 
 trait StrTime {
     fn string_to_time(&self) -> Result<Time, error::Parse>;
@@ -26,6 +26,7 @@ enum ShiftValid {
 enum ShiftType {
     Vroeg,
     Tussen,
+    Dag,
     Gebroken {
         start_break: Option<Time>,
         end_break: Option<Time>,
@@ -75,6 +76,7 @@ struct Shift {
     location: String,
     shift_type: ShiftType,
     job: Vec<ShiftJob>,
+    starting_date: Date,
 }
 
 pub fn read_pdf_stream(pdf_path: PathBuf) -> GenResult<String> {
@@ -109,8 +111,10 @@ pub fn read_pdf_stream(pdf_path: PathBuf) -> GenResult<String> {
 
 fn find_text_and_coordinate(page_stream: String) -> GenResult<Vec<(String, f32)>> {
     let re = Regex::new(r"\((.*?)\)").unwrap(); // Match text inside parentheses
+    let mut starting_date = "03-04-2025".to_string();
     let mut line_elements: Vec<(String, (f32, f32))> = vec![];
-    for (line_number, line) in page_stream.clone().lines().enumerate() {
+    let page_stream_clone = page_stream.clone();
+    for (line_number, line) in page_stream_clone.lines().enumerate() {
         for cap in re.captures_iter(line) {
             let mut coordinate_split = page_stream
                 .lines()
@@ -130,14 +134,14 @@ fn find_text_and_coordinate(page_stream: String) -> GenResult<Vec<(String, f32)>
             // );
             line_elements.push((cap[1].to_string(), coordinate));
             if line.contains("Ingangsdatum"){
-                let line = &cap[1];
-                let start_date = line.split("Ingangsdatum ").last().unwrap();
-                return Ok(vec![(start_date.to_string(),0.0)]);
+                let line = cap[1].to_owned();
+                starting_date = line.split("Ingangsdatum ").last().unwrap().to_owned();
+                // return Ok(vec![(starting_date.to_string(),0.0)]);
             }
         }
     }
     get_line_element(line_elements)?;
-    Ok(vec![("sad".to_string(), 1.0)])
+    Ok(vec![(starting_date.to_string(),0.0)])
 }
 
 fn get_line_element(items: Vec<(String, (f32, f32))>) -> GenResult<()> {
@@ -185,7 +189,8 @@ fn job_creator(
     naar: Option<String>,
 ) -> GenResult<()> {
     let job_drive_type;
-    let job_type;
+    let omloop_number;
+    let mut job_type= None;
     if let Some(lijn_string) = lijn {
         if lijn_string == "MAT" {
             job_drive_type = Some(JobDrivingType::Mat);
@@ -197,8 +202,11 @@ fn job_creator(
                 Some(message) => message,
                 None => JobMessageType::Other(lijn_string)
             };
-            job_type = message;
+            job_type = Some(message);
         }
+    }
+    if let Some(omloop_string) = omloop {
+        omloop_number = omloop_string;
     }
     Ok(())
 }
