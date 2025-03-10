@@ -1,0 +1,2 @@
+[build]
+rustflags = ["-L", "/run/host/usr/lib64:/run/host/usr/lib"]

@@ -279,20 +279,20 @@ async fn main() -> std::io::Result<()> {
     files.hash(&mut s);
     let current_hash = s.finish();
     let previous_hash_option = fs::read("pdf_hash").ok().and_then(|bytes| Some(u64::from_le_bytes(bytes.try_into().unwrap())));
-    // if let Some(previous_hash) = previous_hash_option  {
-    //     if previous_hash != current_hash {
-    //         warn!("Hash is changed, reindexing files");
-    //         load_pdf_and_index(files);
-    //     }
-    //     else{
-    //         info!("Hash is the same, so wont reindex");
-    //     }
-    // }
-    // else{
-    //     error!("Could not find previous hash, reindexing");
-    //     load_pdf_and_index(files);
-    // }
-    load_pdf_and_index(files);
+    if let Some(previous_hash) = previous_hash_option  {
+        if previous_hash != current_hash {
+            warn!("Hash is changed, reindexing files");
+            load_pdf_and_index(files);
+        }
+        else{
+            info!("Hash is the same, so wont reindex");
+        }
+    }
+    else{
+        error!("Could not find previous hash, reindexing");
+        load_pdf_and_index(files);
+    }
+    //load_pdf_and_index(files);
     let _ = fs::write("pdf_hash", current_hash.to_le_bytes());
     let current_timetable = get_valid_timetables(None).unwrap();
     *CURRENT_TIMETABLE.write().unwrap() = current_timetable.1;
