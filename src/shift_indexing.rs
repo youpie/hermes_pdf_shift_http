@@ -224,7 +224,7 @@ fn get_line_element(
     let mut shift_number = String::new();
     let mut jobs = vec![];
     for item in items {
-        get_line_information(
+        match get_line_information(
             &mut lijn,
             &mut omloop,
             &mut rit,
@@ -242,7 +242,10 @@ fn get_line_element(
             offset,
             page_number,
             item.0,
-        );
+        ) {
+            Ok(_) => (),
+            Err(err) => line_errors.push(err),
+        };
         last_y = item.1.1;
     }
     Ok(Shift {
@@ -274,7 +277,7 @@ fn get_line_information(
     offset: f32,
     page_number: u32,
     line: String,
-) -> GenResult<()> {
+) -> Result<(),ShiftParseError> {
     let lijn_lower = 83.0 - offset;
     let lijn_upper = 150.0 - offset;
     let omloop_lower = 200.0 - offset;
@@ -352,8 +355,6 @@ fn identify_metadata(
         *shift_number = metadata.split("Dienst ").last()?.to_owned();
     } else if metadata.contains("MA/DI/WO/DO/VR") {
         *valid_on = ShiftValid::Weekdays;
-    } else if metadata.contains("MA/DI/WO/DO/VR") {
-        *valid_on = ShiftValid::Weekdays;
     } else if metadata.contains("ZA") {
         *valid_on = ShiftValid::Saturday;
     } else if metadata.contains("ZO") {
@@ -370,7 +371,7 @@ fn job_creator(
     eind: Option<String>,
     van: Option<String>,
     naar: Option<String>,
-) -> GenResult<ShiftJob> {
+) -> Result<ShiftJob,ShiftParseError> {
     let mut omloop_number = None;
     let mut job_type = JobType::Unknown;
     let mut rit_number = None;
@@ -426,7 +427,7 @@ fn job_creator(
     })
 }
 
-fn to_iso8601(time_string: String, job_name: &str) -> GenResult<Option<Time>> {
+fn to_iso8601(time_string: String, job_name: &str) -> Result<Option<Time>,ShiftParseError> {
     let mut time_split = time_string.split(":").into_iter();
     let hour_noniso = time_split
         .next()
@@ -435,7 +436,8 @@ fn to_iso8601(time_string: String, job_name: &str) -> GenResult<Option<Time>> {
             parsing_job: Some(job_name.to_string()),
             line: Some(time_string.clone()),
         })?
-        .parse::<u8>()?;
+        .parse::<u8>().map_err(|err| ShiftParseError::GenericShiftError { page_number: 
+            0, error: Box::new(err), line: Some(time_string.clone()) })?;
     let minute = time_split
         .next()
         .ok_or(ShiftParseError::Option {
@@ -443,7 +445,8 @@ fn to_iso8601(time_string: String, job_name: &str) -> GenResult<Option<Time>> {
             parsing_job: Some(job_name.to_string()),
             line: Some(time_string.clone()),
         })?
-        .parse::<u8>()?;
+        .parse::<u8>().map_err(|err| ShiftParseError::GenericShiftError { page_number: 
+            0, error: Box::new(err), line: Some(time_string.clone()) })?;
     let hour_iso = match hour_noniso {
         24.. => hour_noniso - 24,
         _ => hour_noniso,
