@@ -150,6 +150,7 @@ fn get_line_element(
     let mut start_date = Date::from_calendar_date(2025, time::Month::June, 29)?;
     let mut valid_on = ShiftValid::Unknown;
     let mut shift_number = shift_number.unwrap_or_else(|| String::new()).clone();
+    let mut location = String::new();
     let mut jobs = vec![];
     for item in items {
         match get_line_information(
@@ -164,6 +165,7 @@ fn get_line_element(
             &mut start_date,
             &mut valid_on,
             &mut shift_number,
+            &mut location,
             last_y,
             item.1.1,
             item.1.0,
@@ -179,7 +181,7 @@ fn get_line_element(
     Ok(Shift {
         shift_nr: shift_number.to_string(),
         valid_on,
-        location: "todo".to_string(),
+        location,
         shift_type: None,
         job: jobs,
         starting_date: start_date,
@@ -188,7 +190,7 @@ fn get_line_element(
 }
 
 fn get_line_information(
-    lijn: &mut Option<String>,
+    lijn_number: &mut Option<String>,
     omloop: &mut Option<String>,
     rit: &mut Option<String>,
     start: &mut Option<String>,
@@ -199,6 +201,7 @@ fn get_line_information(
     start_date: &mut Date,
     valid_on: &mut ShiftValid,
     shift_number: &mut String,
+    location: &mut String,
     last_y: f32,
     current_y: f32,
     current_x: f32,
@@ -219,13 +222,17 @@ fn get_line_information(
     let naar_lower = 450.0 - 83.0 - offset;
     let naar_upper = 480.0 - 83.0 - offset;
     let eind_lower = 490.0 - 83.0 - offset;
-    if current_y < 40.0 || current_y > 720.0 {
-        if let Some(metadata) = lijn.clone() {
+    if current_y < 50.0 || current_y > 750.0 {
+
+        if let metadata = line.clone() {
             identify_metadata(
                 &mut *start_date,
                 &mut *valid_on,
                 &mut *shift_number,
+                &mut *location,
                 metadata,
+                current_y,
+                current_x
             )
             .ok_or(ShiftParseError::MetadataFailure {
                 page_number,
@@ -233,9 +240,9 @@ fn get_line_information(
             })?;
         }
     } else if last_y != current_y {
-        // println!("Job gevonden!\nLijn {lijn:?}, omloop {omloop:?}, rit {rit:?}, van {van:?}, naar {naar:?}, begint om {start:?} en stopt om {eind:?}");
+        //println!("Job gevonden!\nLijn {lijn:?}, omloop {omloop:?}, rit {rit:?}, van {van:?}, naar {naar:?}, begint om {start:?} en stopt om {eind:?}");
         let job = job_creator(
-            lijn.clone(),
+            lijn_number.clone(),
             omloop.clone(),
             rit.clone(),
             start.clone(),
@@ -245,7 +252,7 @@ fn get_line_information(
         )?;
         //println!("{:?}", &job);
         jobs.push(job);
-        *lijn = None;
+        *lijn_number = None;
         *omloop = None;
         *rit = None;
         *start = None;
@@ -254,7 +261,7 @@ fn get_line_information(
         *eind = None;
     }
     if current_x >= lijn_lower && current_x <= lijn_upper {
-        *lijn = Some(line);
+        *lijn_number = Some(line);
     } else if current_x >= omloop_lower && current_x <= omloop_upper {
         *omloop = Some(line);
     } else if current_x >= rit_lower && current_x <= rit_upper {
@@ -275,7 +282,10 @@ fn identify_metadata(
     start_date: &mut Date,
     valid_on: &mut ShiftValid,
     shift_number: &mut String,
+    location: &mut String,
     metadata: String,
+    current_y: f32,
+    current_x: f32
 ) -> Option<()> {
     if metadata.contains("Ingangsdatum ") {
         *start_date = Date::parse(metadata.split("Ingangsdatum ").last()?, DATE_FORMAT).ok()?;
@@ -287,7 +297,11 @@ fn identify_metadata(
         *valid_on = ShiftValid::Saturday;
     } else if metadata.contains("ZO") {
         *valid_on = ShiftValid::Sunday;
+    } else if current_y > 760.0 && current_x > 300.0 {
+        // warn!("locatie gevonden: {metadata}\ny: {current_y}");
+        *location = metadata
     }
+
     Some(())
 }
 
