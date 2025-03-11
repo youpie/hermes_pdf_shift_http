@@ -1,0 +1,22 @@
+{
+  "shift_nr": "",
+  "valid_on": "Unknown",
+  "location": "todo",
+  "shift_type": null,
+  "job": [
+    {
+      "job_type": "Unknown",
+      "start": null,
+      "end": null,
+      "start_location": null,
+      "end_location": null,
+      "omloop": null,
+      "rit": null
+    }
+  ],
+  "starting_date": [
+    2025,
+    180
+  ],
+  "parse_error": null
+}

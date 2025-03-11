@@ -3,6 +3,7 @@ use crate::GenResult;
 use actix_web::web::get;
 use lopdf::Document;
 use regex::Regex;
+use serde::Serialize;
 use std::future;
 use std::path::PathBuf;
 use thiserror::Error;
@@ -23,12 +24,12 @@ impl StrTime for String {
     }
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Serialize)]
 enum ShiftParseError {
     #[error("Shift on page {page_number} had a generic error{error_string}\nline: {line:?}",error_string = error.to_string())]
     GenericShiftError {
         page_number: u32,
-        error: Box<dyn std::error::Error>,
+        error: String,
         line: Option<String>,
     },
     #[error("Failed to parse metadata on page {page_number}\nline: {line:?}")]
@@ -44,7 +45,7 @@ enum ShiftParseError {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 enum ShiftValid {
     Weekdays,
     Saturday,
@@ -52,7 +53,7 @@ enum ShiftValid {
     Unknown,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 enum ShiftType {
     Vroeg,
     Tussen,
@@ -64,13 +65,13 @@ enum ShiftType {
     Laat,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 enum JobDrivingType {
     Lijn(u32),
     Mat,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 enum JobMessageType {
     Meenemen { dienstnummers: Vec<u32> },
     Passagieren { dienstnummer: u32, omloop: String },
@@ -79,7 +80,7 @@ enum JobMessageType {
     Other(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 enum JobType {
     Rijden { drive_type: JobDrivingType },
     Pauze,
@@ -93,7 +94,7 @@ enum JobType {
     Unknown,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct ShiftJob {
     job_type: JobType,
     start: Option<Time>,
@@ -104,7 +105,7 @@ struct ShiftJob {
     rit: Option<usize>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Shift {
     pub shift_nr: String,
     pub valid_on: ShiftValid,
@@ -147,6 +148,7 @@ pub fn read_pdf_stream(pdf_path: PathBuf) -> GenResult<Vec<Shift>> {
     }
     Ok(shifts)
 }
+
 
 fn parse_page(page_stream: String, offset: f32, page_number: u32) -> GenResult<Shift> {
     let re = Regex::new(r"\((.*?)\)")?; // Match text inside parentheses
@@ -315,7 +317,7 @@ fn get_line_information(
             van.clone(),
             naar.clone(),
         )?;
-        println!("{:?}", &job);
+        //println!("{:?}", &job);
         jobs.push(job);
         *lijn = None;
         *omloop = None;
@@ -437,7 +439,7 @@ fn to_iso8601(time_string: String, job_name: &str) -> Result<Option<Time>,ShiftP
             line: Some(time_string.clone()),
         })?
         .parse::<u8>().map_err(|err| ShiftParseError::GenericShiftError { page_number: 
-            0, error: Box::new(err), line: Some(time_string.clone()) })?;
+            0, error: err.to_string(), line: Some(time_string.clone()) })?;
     let minute = time_split
         .next()
         .ok_or(ShiftParseError::Option {
@@ -446,7 +448,7 @@ fn to_iso8601(time_string: String, job_name: &str) -> Result<Option<Time>,ShiftP
             line: Some(time_string.clone()),
         })?
         .parse::<u8>().map_err(|err| ShiftParseError::GenericShiftError { page_number: 
-            0, error: Box::new(err), line: Some(time_string.clone()) })?;
+            0, error: err.to_string(), line: Some(time_string.clone()) })?;
     let hour_iso = match hour_noniso {
         24.. => hour_noniso - 24,
         _ => hour_noniso,

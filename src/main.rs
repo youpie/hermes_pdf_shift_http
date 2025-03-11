@@ -7,6 +7,7 @@ use shift_indexing::read_pdf_stream;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::{self};
+use std::io;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 use std::sync::RwLock;
@@ -15,6 +16,7 @@ use time::{Date, OffsetDateTime};
 use walkdir::WalkDir;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use time::format_description::BorrowedFormatItem;
+use crate::shift_indexing::Shift;
 
 extern crate pretty_env_logger;
 #[macro_use]
@@ -91,12 +93,14 @@ fn index_trip_sheets(pdf_path: PathBuf, file_id: usize) -> Result<(), Box<dyn Er
                 });
         }
     }
-    let valid_from_day = read_pdf_stream(pdf_path.clone()).unwrap().first().unwrap().starting_date;
+    let extracted_shifts = read_pdf_stream(pdf_path.clone())?;
+    let valid_from_day= extracted_shifts.first().unwrap().starting_date.clone();
     let valid_from_string = valid_from_day.format(DATE_FORMAT).unwrap();
-
-    let output_path = PathBuf::from(format!("{}/{}",COLLECTION_PATH, valid_from_string));
+    let mut output_path = PathBuf::from(format!("{}/{}",COLLECTION_PATH, valid_from_string));
+    save_extracted_shifts(output_path.clone(),extracted_shifts)?;
+    output_path.set_extension("json");
     let pdf_collection_output: PdfTimetableCollection;
-    if let Ok(file) = fs::read(format!("{}/{}",COLLECTION_PATH, valid_from_string)) {
+    if let Ok(file) = fs::read(&output_path) {
         let mut pdf_collection: PdfTimetableCollection = serde_json::from_slice(&file)?;
         pdf_collection
             .files
@@ -119,6 +123,26 @@ fn index_trip_sheets(pdf_path: PathBuf, file_id: usize) -> Result<(), Box<dyn Er
     Ok(())
 }
 
+fn save_extracted_shifts(path: PathBuf, shifts: Vec<Shift>) -> GenResult<()> {
+    match std::fs::create_dir(&path) {
+        Ok(_) => (),
+        Err(kind) if kind.kind() == io::ErrorKind::AlreadyExists => (),
+        Err(kind) => return Err(Box::new(kind))
+    };
+    for shift in shifts {
+        if shift.shift_nr == "".to_string() {
+            continue
+        }
+        let shift_name = &shift.shift_nr.replace(" ", "");
+        let shift_json = serde_json::to_string_pretty(&shift)?;
+        let mut shift_path = path.clone();
+        shift_path.push(shift_name);
+        shift_path.set_extension("json");
+        fs::write(shift_path,shift_json)?;
+    }
+    Ok(())
+}
+
 // load all pdf_collection files. And determine which one is current
 // Also if it exists, save the date of when it gets invalidated (Next timetable)
 fn get_valid_timetables(date: Option<Date>) -> GenResult<(Vec<Date>,PdfTimetableCollection, Option<Date>)> {
@@ -133,6 +157,9 @@ fn get_valid_timetables(date: Option<Date>) -> GenResult<(Vec<Date>,PdfTimetable
     // Loop over all files in the collection folder
     for file_result in collections {
         let file = file_result?;
+        if file.file_type()?.is_dir(){
+            continue
+        }
         let current_collection_file: PdfTimetableCollection =
             serde_json::from_slice(&fs::read(file.path())?)?;
         //if the current collection date is higher than the last but lower than the system time. Make this the most recent one
@@ -157,9 +184,10 @@ fn get_valid_timetables(date: Option<Date>) -> GenResult<(Vec<Date>,PdfTimetable
     Ok((valid_timetables,latest_collection, next_timetable))
 }
 
-fn find_shift(shift_number: String, valid_timetables: Vec<Date>, most_recent_timetable: Option<PdfTimetableCollection>) -> Option<(PdfTimetableCollection,ShiftData)>{
+fn find_shift(shift_number: String, valid_timetables: Vec<Date>, most_recent_timetable: Option<PdfTimetableCollection>) -> Option<(PdfTimetableCollection,ShiftData,Option<Date>)>{
     let mut valid_timetables = valid_timetables;
     let current_timetable;
+    let mut shift_found_on_timetable_date = None;
     if let Some(current_timetable_local) = most_recent_timetable{
         current_timetable = current_timetable_local;
     }
@@ -168,13 +196,14 @@ fn find_shift(shift_number: String, valid_timetables: Vec<Date>, most_recent_tim
             Some(date) => date,
             None => return None
         };
-        current_timetable = match fs::read(format!("{}/{}",COLLECTION_PATH, current_old_timetable_date.format(DATE_FORMAT).ok()?)){
+        shift_found_on_timetable_date = Some(current_old_timetable_date);
+        current_timetable = match fs::read(format!("{}/{}.json",COLLECTION_PATH, current_old_timetable_date.format(DATE_FORMAT).ok()?)){
             Ok(file) => serde_json::from_slice(&file).ok()?,
             Err(_) => return None
         }
     }
     match current_timetable.clone().pages.get(&shift_number) {
-        Some(shift) => Some((current_timetable,shift.clone())),
+        Some(shift) => Some((current_timetable,shift.clone(),shift_found_on_timetable_date)),
         None => find_shift(shift_number,valid_timetables,None)
     }
 }
@@ -191,6 +220,16 @@ async fn get_shift(shift_number: web::Path<String>,query: web::Query<ShiftQuery>
     let normalized_shift_number = shift_number.replace(' ', "");
     let normalized_shift_number = normalized_shift_number.to_uppercase();
     let mut next_timetable_date = *NEW_TIMETABLE_DATE.read().unwrap();
+    let mut valid_timetables = VALID_TIMETABLES.read().unwrap().clone();
+    let mut current_timetable = match CURRENT_TIMETABLE.read() {
+        Ok(value) => value.clone(),
+        Err(err) => {
+            return HttpResponse::InternalServerError().body(format!(
+                "<h1> Sorry, something went wrong, please try again </h1>\nerror: {}",
+                err.to_string()
+            ))
+        }
+    };
     if normalized_shift_number == "REFRESH".to_string(){
         let mut files = Vec::new();
 
@@ -202,17 +241,28 @@ async fn get_shift(shift_number: web::Path<String>,query: web::Query<ShiftQuery>
         }
         load_pdf_and_index(files);
         return HttpResponse::Accepted().body("Shifts sucessfully indexed");
-    }
-    let mut current_timetable = match CURRENT_TIMETABLE.read() {
-        Ok(value) => value.clone(),
-        Err(err) => {
-            return HttpResponse::InternalServerError().body(format!(
-                "<h1> Sorry, something went wrong, please try again </h1>\nerror: {}",
-                err.to_string()
-            ))
+    } else if let Some(file_extension) = normalized_shift_number.split(".").last() {
+        if file_extension == "JSON" {
+            let shift_number_no_extension = normalized_shift_number.split(".").next().unwrap();
+            let shift_timetable_date = match find_shift(shift_number_no_extension.to_string(), valid_timetables, Some(current_timetable.clone())) {
+                Some(data) => data.2,
+                None => return HttpResponse::InternalServerError().body(
+                    "<h1> Sorry, something went wrong finding the JSON shift, please try again </h1>"
+                )
+            };
+            let filepath = match shift_timetable_date {
+                Some(date) => format!("{COLLECTION_PATH}/{date_str}/{shift_number_no_extension}.json",date_str=date.format(DATE_FORMAT).unwrap()),
+                None => format!("{COLLECTION_PATH}/{date_str}/{shift_number_no_extension}.json",date_str=current_timetable.valid_from.format(DATE_FORMAT).unwrap()),
+            };
+            let file_json = match fs::read_to_string(filepath){
+                Ok(shift_json) => shift_json,
+                Err(error) => return HttpResponse::InternalServerError().body(format!(
+                    "<h1> Sorry, something went wrong parsing the JSON shift, please try again </h1>\n error: {error_str}",error_str= error.to_string())
+                )
+            };
+            return HttpResponse::Ok().content_type("application/json").body(file_json);
         }
-    };
-    let mut valid_timetables = VALID_TIMETABLES.read().unwrap().clone();
+    }
     // If new current date = new timetable date. Reload the timetables
     if let Some(new_timetable_date) = next_timetable_date {
         if current_date >= new_timetable_date{
