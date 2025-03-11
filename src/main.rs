@@ -15,14 +15,14 @@ use time::macros::format_description;
 use time::{Date, OffsetDateTime};
 use walkdir::WalkDir;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use time::format_description::BorrowedFormatItem;
-use crate::shift_indexing::Shift;
+use time::format_description::BorrowedFormatItem; 
+use shift_indexing::Shift;
 
 extern crate pretty_env_logger;
 #[macro_use]
 extern crate log;
 
-pub mod shift_indexing;
+mod shift_indexing;
 
 //const PDF_PATH: &str = "Dienstboek";
 const COLLECTION_PATH: &str = "pdf_collection";
@@ -93,7 +93,7 @@ fn index_trip_sheets(pdf_path: PathBuf, file_id: usize) -> Result<(), Box<dyn Er
                 });
         }
     }
-    let extracted_shifts = read_pdf_stream(pdf_path.clone())?;
+    let extracted_shifts = read_pdf_stream(pdf_path.clone(), index.clone())?;
     let valid_from_day= extracted_shifts.first().unwrap().starting_date.clone();
     let valid_from_string = valid_from_day.format(DATE_FORMAT).unwrap();
     let mut output_path = PathBuf::from(format!("{}/{}",COLLECTION_PATH, valid_from_string));

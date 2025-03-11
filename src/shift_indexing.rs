@@ -1,15 +1,19 @@
 #![allow(warnings)]
-use crate::GenResult;
-use actix_web::web::get;
+
+use crate::{GenResult, ShiftData};
 use lopdf::Document;
 use regex::Regex;
 use serde::Serialize;
-use std::future;
+pub use shift_scructs::*;
+use std::collections::HashMap;
+use std::ops::Neg;
 use std::path::PathBuf;
-use thiserror::Error;
+use float_ord::FloatOrd;
 use time::format_description::BorrowedFormatItem;
 use time::macros::format_description;
-use time::{Date, Time, error, format_description};
+use time::{Date, Time, error};
+
+mod shift_scructs;
 
 const DATE_FORMAT: &[BorrowedFormatItem<'_>] = format_description!["[day]-[month]-[year]"];
 
@@ -24,101 +28,13 @@ impl StrTime for String {
     }
 }
 
-#[derive(Error, Debug, Serialize)]
-enum ShiftParseError {
-    #[error("Shift on page {page_number} had a generic error{error_string}\nline: {line:?}",error_string = error.to_string())]
-    GenericShiftError {
-        page_number: u32,
-        error: String,
-        line: Option<String>,
-    },
-    #[error("Failed to parse metadata on page {page_number}\nline: {line:?}")]
-    MetadataFailure {
-        page_number: u32,
-        line: Option<String>,
-    },
-    #[error("{function}: Unwrapped an option while parsing {parsing_job:?}\nline: {line:?}")]
-    Option {
-        function: &'static str,
-        parsing_job: Option<String>,
-        line: Option<String>,
-    },
-}
-
-#[derive(Debug, Serialize)]
-enum ShiftValid {
-    Weekdays,
-    Saturday,
-    Sunday,
-    Unknown,
-}
-
-#[derive(Debug, Serialize)]
-enum ShiftType {
-    Vroeg,
-    Tussen,
-    Dag,
-    Gebroken {
-        start_break: Option<Time>,
-        end_break: Option<Time>,
-    }, // If one is none, it means it's half of a broken shift
-    Laat,
-}
-
-#[derive(Debug, Serialize)]
-enum JobDrivingType {
-    Lijn(u32),
-    Mat,
-}
-
-#[derive(Debug, Serialize)]
-enum JobMessageType {
-    Meenemen { dienstnummers: Vec<u32> },
-    Passagieren { dienstnummer: u32, omloop: String },
-    BusOp { lijn: u32 },
-    NeemBus { bustype: String },
-    Other(String),
-}
-
-#[derive(Debug, Serialize)]
-enum JobType {
-    Rijden { drive_type: JobDrivingType },
-    Pauze,
-    Onderbreking,
-    OpAfstap,
-    RijklaarMaken,
-    StallenAfmelden,
-    Melding { message: JobMessageType },
-    LoopReis,
-    Reserve,
-    Unknown,
-}
-
-#[derive(Debug, Serialize)]
-struct ShiftJob {
-    job_type: JobType,
-    start: Option<Time>,
-    end: Option<Time>,
-    start_location: Option<String>,
-    end_location: Option<String>, // If none, it's the same as start
-    omloop: Option<usize>,
-    rit: Option<usize>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct Shift {
-    pub shift_nr: String,
-    pub valid_on: ShiftValid,
-    pub location: String,
-    pub shift_type: Option<ShiftType>,
-    pub job: Vec<ShiftJob>,
-    pub starting_date: Date,
-    pub parse_error: Option<Vec<ShiftParseError>>,
-}
-
-pub fn read_pdf_stream(pdf_path: PathBuf) -> GenResult<Vec<Shift>> {
+pub fn read_pdf_stream(
+    pdf_path: PathBuf,
+    shift_pages: HashMap<String, ShiftData>,
+) -> GenResult<Vec<Shift>> {
     let doc = Document::load(pdf_path)?;
     let pages = doc.get_pages();
+    let pagenr_hashmap = reverse_pagenr_hashmap(shift_pages);
     let mut i = 0;
     let mut shifts: Vec<Shift> = vec![];
     for (&page_number, &page_id) in pages.iter() {
@@ -137,8 +53,8 @@ pub fn read_pdf_stream(pdf_path: PathBuf) -> GenResult<Vec<Shift>> {
                 let stream_string = stream_string.replace("Tf", "");
                 // let stream = lopdf::Object::Stream(*object);
                 //println!("Page {} stream: {}", page_number, stream_string);
-                let offset = if i % 2 == 0 { 0.0 } else { 48.0 };
-                shifts.push(parse_page(stream_string, offset, page_number)?);
+                let shift_number = pagenr_hashmap.get(&page_number).map(|x| x.to_owned());
+                shifts.push(parse_page(stream_string, page_number,shift_number)?);
             }
             _ => {
                 println!("Unexpected type for Contents on page {}", page_number);
@@ -149,8 +65,17 @@ pub fn read_pdf_stream(pdf_path: PathBuf) -> GenResult<Vec<Shift>> {
     Ok(shifts)
 }
 
+fn reverse_pagenr_hashmap(hashmap: HashMap<String, ShiftData>) -> HashMap<u32, String> {
+    let mut new_hashmap: HashMap<u32, String> = HashMap::new();
+    for item in hashmap.into_iter() {
+        item.1.pages.iter().for_each(|p| {
+            new_hashmap.insert(*p, item.0.clone());
+        })
+    }
+    new_hashmap
+}
 
-fn parse_page(page_stream: String, offset: f32, page_number: u32) -> GenResult<Shift> {
+fn parse_page(page_stream: String, page_number: u32, shift_number: Option<String>) -> GenResult<Shift> {
     let re = Regex::new(r"\((.*?)\)")?; // Match text inside parentheses
     let mut line_elements: Vec<(String, (f32, f32))> = vec![];
     let page_stream_clone = page_stream.clone();
@@ -202,6 +127,7 @@ fn get_line_element(
     items: Vec<(String, (f32, f32))>,
     offset: f32,
     page_number: u32,
+    shift_number: Option<String>
 ) -> GenResult<Shift> {
     let mut line_errors: Vec<ShiftParseError> = vec![];
 
@@ -223,7 +149,7 @@ fn get_line_element(
     let mut eind: Option<_> = None;
     let mut start_date = Date::from_calendar_date(2025, time::Month::June, 29)?;
     let mut valid_on = ShiftValid::Unknown;
-    let mut shift_number = String::new();
+    let mut shift_number = shift_number.unwrap_or_else(|| String::new()).clone();
     let mut jobs = vec![];
     for item in items {
         match get_line_information(
@@ -252,7 +178,7 @@ fn get_line_element(
     }
     Ok(Shift {
         shift_nr: shift_number.to_string(),
-        valid_on: valid_on,
+        valid_on,
         location: "todo".to_string(),
         shift_type: None,
         job: jobs,
@@ -280,19 +206,19 @@ fn get_line_information(
     page_number: u32,
     line: String,
 ) -> Result<(), ShiftParseError> {
-    let lijn_lower = 83.0 - 35.0 - offset;
-    let lijn_upper = 150.0 - 35.0 - offset;
-    let omloop_lower = 200.0 - 35.0 - offset;
-    let omloop_upper = 280.0 - 35.0 - offset;
-    let rit_lower = 300.0 - 35.0 - offset;
-    let rit_upper = 350.0 - 35.0 - offset;
-    let start_lower = 350.0 - 35.0 - offset;
-    let start_upper = 390.0 - 35.0 - offset;
-    let van_lower = 400.0 - 35.0 - offset;
-    let van_upper = 420.0 - 35.0 - offset;
-    let naar_lower = 450.0 - 35.0 - offset;
-    let naar_upper = 480.0 - 35.0 - offset;
-    let eind_lower = 490.0 - 35.0 - offset;
+    let lijn_lower = 83.0 - 83.0 - offset;
+    let lijn_upper = 150.0 - 83.0 - offset;
+    let omloop_lower = 180.0 - 83.0 - offset;
+    let omloop_upper = 200.0 - 83.0 - offset;
+    let rit_lower = 300.0 - 83.0 - offset;
+    let rit_upper = 350.0 - 83.0 - offset;
+    let start_lower = 350.0 - 83.0 - offset;
+    let start_upper = 390.0 - 83.0 - offset;
+    let van_lower = 400.0 - 83.0 - offset;
+    let van_upper = 420.0 - 83.0 - offset;
+    let naar_lower = 450.0 - 83.0 - offset;
+    let naar_upper = 480.0 - 83.0 - offset;
+    let eind_lower = 490.0 - 83.0 - offset;
     if current_y < 40.0 || current_y > 720.0 {
         if let Some(metadata) = lijn.clone() {
             identify_metadata(
@@ -353,7 +279,7 @@ fn identify_metadata(
 ) -> Option<()> {
     if metadata.contains("Ingangsdatum ") {
         *start_date = Date::parse(metadata.split("Ingangsdatum ").last()?, DATE_FORMAT).ok()?;
-    } else if metadata.contains("Dienst ") {
+    } else if metadata.contains("Dienst ") || shift_number.is_empty() {
         *shift_number = metadata.split("Dienst ").last()?.to_owned();
     } else if metadata.contains("MA/DI/WO/DO/VR") {
         *valid_on = ShiftValid::Weekdays;
@@ -373,7 +299,7 @@ fn job_creator(
     eind: Option<String>,
     van: Option<String>,
     naar: Option<String>,
-) -> Result<ShiftJob,ShiftParseError> {
+) -> Result<ShiftJob, ShiftParseError> {
     let mut omloop_number = None;
     let mut job_type = JobType::Unknown;
     let mut rit_number = None;
@@ -390,6 +316,8 @@ fn job_creator(
             job_type = JobType::Rijden {
                 drive_type: JobDrivingType::Lijn(lijn_parse),
             };
+        } else if lijn_string == "Op/Afstaptijd" {
+            job_type = JobType::OpAfstap;
         } else {
             let message = match message_type_finder(lijn_string.clone()) {
                 Some(message) => message,
@@ -402,10 +330,10 @@ fn job_creator(
         rit_number = rit_string.parse::<usize>().ok();
     }
     if let Some(start_string) = start {
-        to_iso8601(start_string, "Start time")?;
+        start_time = to_iso8601(start_string, "Start time")?;
     }
     if let Some(end_string) = eind {
-        to_iso8601(end_string, "End time")?;
+        end_time = to_iso8601(end_string, "End time")?;
     }
     if let Some(omloop_string) = omloop {
         match omloop_string.as_ref() {
@@ -429,7 +357,7 @@ fn job_creator(
     })
 }
 
-fn to_iso8601(time_string: String, job_name: &str) -> Result<Option<Time>,ShiftParseError> {
+fn to_iso8601(time_string: String, job_name: &str) -> Result<Option<Time>, ShiftParseError> {
     let mut time_split = time_string.split(":").into_iter();
     let hour_noniso = time_split
         .next()
@@ -438,8 +366,12 @@ fn to_iso8601(time_string: String, job_name: &str) -> Result<Option<Time>,ShiftP
             parsing_job: Some(job_name.to_string()),
             line: Some(time_string.clone()),
         })?
-        .parse::<u8>().map_err(|err| ShiftParseError::GenericShiftError { page_number: 
-            0, error: err.to_string(), line: Some(time_string.clone()) })?;
+        .parse::<u8>()
+        .map_err(|err| ShiftParseError::GenericShiftError {
+            page_number: 0,
+            error: err.to_string(),
+            line: Some(time_string.clone()),
+        })?;
     let minute = time_split
         .next()
         .ok_or(ShiftParseError::Option {
@@ -447,8 +379,12 @@ fn to_iso8601(time_string: String, job_name: &str) -> Result<Option<Time>,ShiftP
             parsing_job: Some(job_name.to_string()),
             line: Some(time_string.clone()),
         })?
-        .parse::<u8>().map_err(|err| ShiftParseError::GenericShiftError { page_number: 
-            0, error: err.to_string(), line: Some(time_string.clone()) })?;
+        .parse::<u8>()
+        .map_err(|err| ShiftParseError::GenericShiftError {
+            page_number: 0,
+            error: err.to_string(),
+            line: Some(time_string.clone()),
+        })?;
     let hour_iso = match hour_noniso {
         24.. => hour_noniso - 24,
         _ => hour_noniso,
@@ -458,7 +394,6 @@ fn to_iso8601(time_string: String, job_name: &str) -> Result<Option<Time>,ShiftP
 
 fn message_type_finder(lijn_string: String) -> Option<JobMessageType> {
     let lijn_first_word = lijn_string.split_whitespace().next()?.to_lowercase();
-    let first_word_str = lijn_first_word.as_str();
     let message = match lijn_first_word.as_str() {
         "neem" => JobMessageType::NeemBus {
             bustype: lijn_string.replace("neem ", ""),
