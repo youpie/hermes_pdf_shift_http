@@ -279,20 +279,20 @@ fn get_line_information(
     offset: f32,
     page_number: u32,
     line: String,
-) -> Result<(),ShiftParseError> {
-    let lijn_lower = 83.0 - offset;
-    let lijn_upper = 150.0 - offset;
-    let omloop_lower = 200.0 - offset;
-    let omloop_upper = 280.0 - offset;
-    let rit_lower = 300.0 - offset;
-    let rit_upper = 350.0 - offset;
-    let start_lower = 350.0 - offset;
-    let start_upper = 390.0 - offset;
-    let van_lower = 400.0 - offset;
-    let van_upper = 420.0 - offset;
-    let naar_lower = 450.0 - offset;
-    let naar_upper = 480.0 - offset;
-    let eind_lower = 490.0 - offset;
+) -> Result<(), ShiftParseError> {
+    let lijn_lower = 83.0 - 35.0 - offset;
+    let lijn_upper = 150.0 - 35.0 - offset;
+    let omloop_lower = 200.0 - 35.0 - offset;
+    let omloop_upper = 280.0 - 35.0 - offset;
+    let rit_lower = 300.0 - 35.0 - offset;
+    let rit_upper = 350.0 - 35.0 - offset;
+    let start_lower = 350.0 - 35.0 - offset;
+    let start_upper = 390.0 - 35.0 - offset;
+    let van_lower = 400.0 - 35.0 - offset;
+    let van_upper = 420.0 - 35.0 - offset;
+    let naar_lower = 450.0 - 35.0 - offset;
+    let naar_upper = 480.0 - 35.0 - offset;
+    let eind_lower = 490.0 - 35.0 - offset;
     if current_y < 40.0 || current_y > 720.0 {
         if let Some(metadata) = lijn.clone() {
             identify_metadata(
