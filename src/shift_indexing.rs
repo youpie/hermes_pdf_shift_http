@@ -193,8 +193,8 @@ fn parse_page(page_stream: String, offset: f32, page_number: u32) -> GenResult<S
             line_elements.push((cap[1].to_string(), coordinate));
         }
     }
-
-    let shift = get_line_element(line_elements, offset, page_number)?;
+    let minimal_x = line_elements.iter().map(|val| FloatOrd(val.1.0)).min().unwrap_or(FloatOrd(0.0)).0.neg();
+    let shift = get_line_element(line_elements, minimal_x, page_number, shift_number)?;
     Ok(shift)
 }
 
