@@ -168,6 +168,7 @@ async fn get_shift(shift_number: web::Path<String>) -> impl Responder {
     // Normalize input by removing spaces
     let normalized_shift_number = shift_number.replace(' ', "");
     let normalized_shift_number = normalized_shift_number.to_uppercase();
+    let next_timetable_date = *NEW_TIMETABLE_DATE.read().unwrap();
     let mut current_collection = match CURRENT_COLLECTION.read() {
         Ok(value) => value.clone(),
         Err(err) => {
@@ -180,17 +181,9 @@ async fn get_shift(shift_number: web::Path<String>) -> impl Responder {
     if let Some(new_timetable_date) = *NEW_TIMETABLE_DATE.read().unwrap() {
         if OffsetDateTime::now_utc().date() >= new_timetable_date {
             warn!("Loading new timetable");
-            // let _ = fs::read_dir("Dienstboek").unwrap()
-            //     .into_iter()
-            //     .enumerate()
-            //     .map(|path| index_trip_sheets(path.1.unwrap().path(), path.0).unwrap())
-            //     .collect::<Vec<_>>();
             let _ = new_timetable_date;
             let new_timetable_date;
             (current_collection,new_timetable_date) = get_valid_timetable().unwrap();
-            info!("a");
-            *NEW_TIMETABLE_DATE.write().unwrap() = new_timetable_date;
-            info!("b");
         }
     }
     
@@ -211,6 +204,7 @@ async fn get_shift(shift_number: web::Path<String>) -> impl Responder {
     let pdf = QPdf::read(format!("{PDF_PATH}/{shift_path}")).unwrap();
     let new_doc = QPdf::empty();
     *CURRENT_COLLECTION.write().unwrap() = current_collection;
+    *NEW_TIMETABLE_DATE.write().unwrap() = next_timetable_date;
     // Keep only the pages we want
     let extracted_pages = pdf.get_page(*shift_page.last().unwrap() - 1).unwrap();
     new_doc.add_page(extracted_pages, true).unwrap();
@@ -234,7 +228,7 @@ async fn main() -> std::io::Result<()> {
     let current_timetable = get_valid_timetable().unwrap();
     *CURRENT_COLLECTION.write().unwrap() = current_timetable.0;
     *NEW_TIMETABLE_DATE.write().unwrap() = current_timetable.1;
-    println!("timetable: {}",*NEW_TIMETABLE_DATE.read().unwrap());
+   // println!("timetable: {}",*NEW_TIMETABLE_DATE.read().unwrap());
     //let shifts = load_shifts().expect("Failed to load shifts");
     //shift_indexing::read_pdf_stream(pdf_path).unwrap();
     //let app_state = web::Data::new(current_timetable.0);
