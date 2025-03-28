@@ -83,7 +83,7 @@ pub fn read_pdf_stream(pdf_path: PathBuf) -> GenResult<String> {
     for (&page_number, &page_id) in pages.iter() {
         let page_dict = doc.get_object(page_id)?.as_dict()?;
         let contents = page_dict.get(b"Contents")?;
-        println!("{:#?}", contents);
+        //println!("{:#?}", contents);
         match contents {
             lopdf::Object::Reference(r) => {
                 let object = doc.get_object(*r)?.as_stream()?;
@@ -122,22 +122,20 @@ fn find_text_and_coordinate(page_stream: String) -> GenResult<Vec<(String, f32)>
                 coordinate_split.next().unwrap().parse().unwrap(),
             );
 
-            println!(
-                "Line {}: {} op positie {:?}",
-                line_number + 1,
-                &cap[1],
-                coordinate
-            );
+            // println!(
+            //     "Line {}: {} op positie {:?}",
+            //     line_number + 1,
+            //     &cap[1],
+            //     coordinate
+            // );
             line_elements.push((cap[1].to_string(), coordinate));
             if line.contains("Ingangsdatum"){
                 let line = &cap[1];
-                println!("Line: {line}");
                 let start_date = line.split("Ingangsdatum ").last().unwrap();
                 return Ok(vec![(start_date.to_string(),0.0)]);
             }
         }
     }
-    println!("{}", line_elements.len());
     get_line_element(line_elements)?;
     Ok(vec![("sad".to_string(), 1.0)])
 }
