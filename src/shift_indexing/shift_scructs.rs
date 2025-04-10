@@ -43,13 +43,13 @@ pub enum ShiftType {
     Laat,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq)]
 pub enum JobDrivingType {
     Lijn(u32),
     Mat,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq)]
 pub enum JobMessageType {
     Meenemen { dienstnummers: Vec<u32> },
     Passagieren { dienstnummer: u32, omloop: String },
@@ -58,7 +58,7 @@ pub enum JobMessageType {
     Other(String),
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize,PartialEq)]
 pub enum JobType {
     Rijden { drive_type: JobDrivingType },
     Pauze,
@@ -81,6 +81,13 @@ pub struct ShiftJob {
     pub end_location: Option<String>, // If none, it's the same as start
     pub omloop: Option<usize>,
     pub rit: Option<usize>,
+}
+
+impl ShiftJob {
+    pub fn empty(&self) -> bool {
+        if (self.job_type == JobType::Unknown && self.start.is_none() && self.end.is_none() && self.start_location.is_none() && self.end_location.is_none()) {return true;}
+        false
+    }
 }
 
 #[derive(Debug, Serialize)]

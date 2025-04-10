@@ -211,8 +211,8 @@ fn get_line_information(
 ) -> Result<(), ShiftParseError> {
     let lijn_lower = 83.0 - 83.0 - offset;
     let lijn_upper = 150.0 - 83.0 - offset;
-    let omloop_lower = 180.0 - 83.0 - offset;
-    let omloop_upper = 200.0 - 83.0 - offset;
+    let omloop_lower = 150.1 - 83.0 - offset;
+    let omloop_upper = 290.0 - 83.0 - offset;
     let rit_lower = 300.0 - 83.0 - offset;
     let rit_upper = 350.0 - 83.0 - offset;
     let start_lower = 350.0 - 83.0 - offset;
@@ -222,6 +222,30 @@ fn get_line_information(
     let naar_lower = 450.0 - 83.0 - offset;
     let naar_upper = 480.0 - 83.0 - offset;
     let eind_lower = 490.0 - 83.0 - offset;
+    if last_y != current_y {
+        //println!("Job gevonden!\nLijn {lijn:?}, omloop {omloop:?}, rit {rit:?}, van {van:?}, naar {naar:?}, begint om {start:?} en stopt om {eind:?}");
+        let job = job_creator(
+            lijn_number.clone(),
+            omloop.clone(),
+            rit.clone(),
+            start.clone(),
+            eind.clone(),
+            van.clone(),
+            naar.clone(),
+        )?;
+        //println!("{:?}", &job);
+        if !job.empty() {
+            jobs.push(job);
+        }
+        *lijn_number = None;
+        *omloop = None;
+        *rit = None;
+        *start = None;
+        *van = None;
+        *naar = None;
+        *eind = None;
+    }
+    println!("Line: {}, x: {}",line, current_x);
     if current_y < 50.0 || current_y > 750.0 {
 
         if let metadata = line.clone() {
@@ -239,30 +263,10 @@ fn get_line_information(
                 line: None,
             })?;
         }
-    } else if last_y != current_y {
-        //println!("Job gevonden!\nLijn {lijn:?}, omloop {omloop:?}, rit {rit:?}, van {van:?}, naar {naar:?}, begint om {start:?} en stopt om {eind:?}");
-        let job = job_creator(
-            lijn_number.clone(),
-            omloop.clone(),
-            rit.clone(),
-            start.clone(),
-            eind.clone(),
-            van.clone(),
-            naar.clone(),
-        )?;
-        //println!("{:?}", &job);
-        jobs.push(job);
-        *lijn_number = None;
-        *omloop = None;
-        *rit = None;
-        *start = None;
-        *van = None;
-        *naar = None;
-        *eind = None;
-    }
-    if current_x >= lijn_lower && current_x <= lijn_upper {
+    } else if current_x >= lijn_lower && current_x <= lijn_upper {
         *lijn_number = Some(line);
     } else if current_x >= omloop_lower && current_x <= omloop_upper {
+
         *omloop = Some(line);
     } else if current_x >= rit_lower && current_x <= rit_upper {
         *rit = Some(line);
@@ -275,6 +279,7 @@ fn get_line_information(
     } else if current_x >= eind_lower {
         *eind = Some(line);
     }
+
     Ok(())
 }
 
