@@ -6,3 +6,4 @@ services:
       - 8080:8080
     volumes:
       - ./Dienstboek:/usr/src/hermes_pdf_shift_http/Dienstboek/
+    restart: on-failure
