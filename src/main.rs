@@ -267,7 +267,7 @@ async fn get_shift(
             let shift_number_no_extension = normalized_shift_number.split(".").next().unwrap();
             let shift_timetable_date = match find_shift(shift_number_no_extension.to_string(), valid_timetables, Some(current_timetable.clone())) {
                 Some(data) => data.2,
-                None => return HttpResponse::InternalServerError().body(
+                None => return HttpResponse::NotFound().body(
                     "<h1> Sorry, something went wrong finding the JSON shift, please try again </h1>"
                 )
             };
