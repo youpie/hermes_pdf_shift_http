@@ -304,10 +304,11 @@ async fn get_shift(
                 .content_type("application/json")
                 .body(file_json);
         }
-    } else if  normalized_shift_number == "INDEX" {
+    }
+    if  normalized_shift_number == "INDEX" {      
         match get_valid_shifts(Some(current_date)) {
             Ok(shifts) => {return HttpResponse::Ok()
-                .content_type("application/text")
+                .content_type("text/plain")
                 .body(format!("{shifts:#?}"))}
             Err(err) => {return HttpResponse::ImATeapot().body(format!("sorry, didnt work :(: {}",err.to_string()));}
         }

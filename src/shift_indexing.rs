@@ -245,7 +245,7 @@ fn get_line_information(
         *naar = None;
         *eind = None;
     }
-    println!("Line: {}, x: {}",line, current_x);
+    //println!("Line: {}, x: {}",line, current_x);
     if current_y < 50.0 || current_y > 750.0 {
 
         if let metadata = line.clone() {
