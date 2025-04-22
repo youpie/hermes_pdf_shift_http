@@ -1,4 +1,5 @@
 use actix_web::{App, HttpResponse, HttpServer, Responder, get, web};
+use index::get_valid_shifts;
 use lopdf::Document;
 use qpdf::QPdf;
 use regex::Regex;
@@ -22,6 +23,7 @@ extern crate pretty_env_logger;
 #[macro_use]
 extern crate log;
 
+mod index;
 mod shift_indexing;
 
 //const PDF_PATH: &str = "Dienstboek";
@@ -144,7 +146,7 @@ fn save_extracted_shifts(path: PathBuf, shifts: Vec<Shift>) -> GenResult<()> {
 }
 
 // load all pdf_collection files. And determine which one is current
-// Also if it exists, save the date of when it gets invalidated (Next timetable)
+// Also if it exists, save the date of when it gets invalidated (when the Next timetable starts)
 fn get_valid_timetables(
     date: Option<Date>,
 ) -> GenResult<(Vec<Date>, PdfTimetableCollection, Option<Date>)> {
@@ -153,37 +155,48 @@ fn get_valid_timetables(
         Some(date) => date,
         None => OffsetDateTime::now_utc().date(),
     };
-    let mut latest_collection = PdfTimetableCollection::new();
-    let mut next_timetable: Option<Date> = None;
-    let mut valid_timetables: Vec<Date> = vec![];
+    let mut most_recent_valid_timetable = PdfTimetableCollection::new();
+    let mut upcoming_timetables: Vec<Date> = vec![];
+    let mut active_timetables: Vec<Date> = vec![];
     // Loop over all files in the collection folder
     for file_result in collections {
         let file = file_result?;
         if file.file_type()?.is_dir() {
             continue;
         }
-        let current_collection_file: PdfTimetableCollection =
+        let temp_current_collection_file: PdfTimetableCollection =
             serde_json::from_slice(&fs::read(file.path())?)?;
         //if the current collection date is higher than the last but lower than the system time. Make this the most recent one
-        if current_collection_file.valid_from > latest_collection.valid_from
-            && current_collection_file.valid_from <= current_date
+        if temp_current_collection_file.valid_from > most_recent_valid_timetable.valid_from
+            && temp_current_collection_file.valid_from <= current_date
         {
-            latest_collection = current_collection_file.clone();
-        // this method does not support multiple future timetables.
-        } else if current_collection_file.valid_from > current_date {
-            next_timetable = Some(current_collection_file.valid_from);
+            most_recent_valid_timetable = temp_current_collection_file.clone();
+        } else if temp_current_collection_file.valid_from > current_date {
+            upcoming_timetables.push(temp_current_collection_file.valid_from);
         }
 
-        if current_collection_file.valid_from <= current_date {
-            valid_timetables.push(current_collection_file.valid_from)
+        // Create a list of all currently valid timetables
+        if temp_current_collection_file.valid_from <= current_date {
+            active_timetables.push(temp_current_collection_file.valid_from)
         }
     }
-    valid_timetables.sort_by_key(|value| *value);
-    valid_timetables.reverse();
-    info!("writing new timetable {:?}", &next_timetable);
-    fs::write("new_timetable", serde_json::to_string(&next_timetable)?)?;
+    active_timetables.sort_by_key(|value| *value);
+    active_timetables.reverse();
+
+    upcoming_timetables.sort();
+    let next_timetable = upcoming_timetables.first().cloned();
+    
+    // Only write new timetable if it is compared to today
+    if date.is_none() {
+        info!("writing new timetable {:?}", &next_timetable);
+        fs::write("new_timetable", serde_json::to_string(&next_timetable)?)?;
+    }
     //*NEW_TIMETABLE_DATE.write().unwrap() = next_timetable;
-    Ok((valid_timetables, latest_collection, next_timetable))
+    Ok((
+        active_timetables,
+        most_recent_valid_timetable,
+        next_timetable,
+    ))
 }
 
 fn find_shift(
@@ -290,6 +303,13 @@ async fn get_shift(
             return HttpResponse::Ok()
                 .content_type("application/json")
                 .body(file_json);
+        }
+    } else if  normalized_shift_number == "INDEX" {
+        match get_valid_shifts(Some(current_date)) {
+            Ok(shifts) => {return HttpResponse::Ok()
+                .content_type("application/text")
+                .body(format!("{shifts:#?}"))}
+            Err(err) => {return HttpResponse::ImATeapot().body(format!("sorry, didnt work :(: {}",err.to_string()));}
         }
     }
     // If new current date = new timetable date. Reload the timetables
