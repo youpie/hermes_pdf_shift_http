@@ -1,5 +1,5 @@
 use actix_web::{App, HttpResponse, HttpServer, Responder, get, web};
-use index::get_valid_shifts;
+use index::handle_index_request;
 use lopdf::Document;
 use qpdf::QPdf;
 use regex::Regex;
@@ -234,6 +234,23 @@ fn find_shift(
     }
 }
 
+fn handle_refresh_request() -> HttpResponse {
+    let mut files = Vec::new();
+
+        for entry in WalkDir::new("Dienstboek")
+            .into_iter()
+            .filter_map(Result::ok)
+        {
+            let path = entry.path();
+            if path.is_file() {
+                // Skip directories
+                files.push(path.to_path_buf());
+            }
+        }
+        load_pdf_and_index(files);
+        return HttpResponse::Accepted().body("Shifts sucessfully indexed");
+}
+
 #[get("/shift/{shift_number}")]
 async fn get_shift(
     shift_number: web::Path<String>,
@@ -241,11 +258,11 @@ async fn get_shift(
 ) -> impl Responder {
     info!("Got request for {}", shift_number);
     let custom_date = query.date.is_some();
-    let current_date = query
+    let current_date_option = query
         .date
         .as_ref()
-        .and_then(|date_string| Date::parse(date_string, DATE_FORMAT).ok())
-        .unwrap_or_else(|| OffsetDateTime::now_utc().date());
+        .and_then(|date_string| Date::parse(date_string, DATE_FORMAT).ok());
+    let current_date = current_date_option.unwrap_or_else(|| OffsetDateTime::now_utc().date());
     // Normalize input by removing spaces
     let normalized_shift_number = shift_number.replace(' ', "");
     let normalized_shift_number = normalized_shift_number.to_uppercase();
@@ -261,21 +278,12 @@ async fn get_shift(
         }
     };
     if normalized_shift_number == "REFRESH".to_string() {
-        let mut files = Vec::new();
-
-        for entry in WalkDir::new("Dienstboek")
-            .into_iter()
-            .filter_map(Result::ok)
-        {
-            let path = entry.path();
-            if path.is_file() {
-                // Skip directories
-                files.push(path.to_path_buf());
-            }
-        }
-        load_pdf_and_index(files);
-        return HttpResponse::Accepted().body("Shifts sucessfully indexed");
-    } else if let Some(file_extension) = normalized_shift_number.split(".").last() {
+        return handle_refresh_request();
+    }
+    else if normalized_shift_number == "INDEX" {     
+        return handle_index_request(current_date_option);
+    }
+    if let Some(file_extension) = normalized_shift_number.split(".").last() {
         if file_extension == "JSON" {
             let shift_number_no_extension = normalized_shift_number.split(".").next().unwrap();
             let shift_timetable_date = match find_shift(shift_number_no_extension.to_string(), valid_timetables, Some(current_timetable.clone())) {
@@ -305,21 +313,13 @@ async fn get_shift(
                 .body(file_json);
         }
     }
-    if  normalized_shift_number == "INDEX" {      
-        match get_valid_shifts(Some(current_date)) {
-            Ok(shifts) => {return HttpResponse::Ok()
-                .content_type("text/plain")
-                .body(format!("{shifts:#?}"))}
-            Err(err) => {return HttpResponse::ImATeapot().body(format!("sorry, didnt work :(: {}",err.to_string()));}
-        }
-    }
     // If new current date = new timetable date. Reload the timetables
     if let Some(new_timetable_date) = next_timetable_date {
         if current_date >= new_timetable_date {
             warn!("Loading new timetable");
             let _ = new_timetable_date;
             (valid_timetables, current_timetable, next_timetable_date) =
-                get_valid_timetables(Some(current_date)).unwrap();
+                get_valid_timetables(current_date_option).unwrap();
             if !custom_date {
                 *CURRENT_TIMETABLE.write().unwrap() = current_timetable.clone();
                 *NEW_TIMETABLE_DATE.write().unwrap() = next_timetable_date.clone();
@@ -328,7 +328,7 @@ async fn get_shift(
         }
     } else if custom_date {
         (valid_timetables, current_timetable, _) =
-            get_valid_timetables(Some(current_date)).unwrap();
+            get_valid_timetables(current_date_option).unwrap();
     }
 
     info!(
@@ -389,12 +389,12 @@ async fn main() -> std::io::Result<()> {
     let mut s = DefaultHasher::new();
     files.hash(&mut s);
     let current_hash = s.finish();
-    let previous_hash_option = fs::read("pdf_hash")
+    let _previous_hash_option = fs::read("pdf_hash")
         .ok()
         .and_then(|bytes| Some(u64::from_le_bytes(bytes.try_into().unwrap())));
     #[cfg(not(debug_assertions))]
     {
-        if let Some(previous_hash) = previous_hash_option {
+        if let Some(previous_hash) = _previous_hash_option {
             if previous_hash != current_hash {
                 warn!("Hash is changed, reindexing files");
                 load_pdf_and_index(files);
