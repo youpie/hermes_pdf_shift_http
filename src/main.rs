@@ -83,16 +83,33 @@ fn index_trip_sheets(pdf_path: PathBuf, file_id: usize) -> Result<(), Box<dyn Er
         // Search for matches in the page text.
         for cap in re.captures_iter(&text) {
             // Capture the group that contains the trip number.
-            let trip_number = cap.get(1).map_or("", |m| m.as_str()).to_string();
-            let trip_number = trip_number.replace(" ", "");
+            let trip_name = cap.get(1).map_or("", |m| m.as_str()).to_string();
+            
+            let mut trip_split = trip_name.split(" ");
+            let trip_type = trip_split.next().unwrap_or("V");
+            let trip_number = trip_split.next().unwrap_or("1234");
+
+            let trip_name_formatted = trip_name.replace(" ", "");
+            
             // Add the page number to the index for this trip number.
+
             index
-                .entry(trip_number)
+                .entry(trip_name_formatted)
                 .and_modify(|pages| pages.pages.push(*page_num))
                 .or_insert(ShiftData {
                     pages: vec![*page_num],
                     file_id,
                 });
+            if trip_type == "GM" {
+                let modified_trip_name = format!("G{trip_number}");
+                index
+                    .entry(modified_trip_name)
+                    .and_modify(|pages| pages.pages.push(*page_num))
+                    .or_insert(ShiftData {
+                        pages: vec![*page_num],
+                        file_id,
+                });
+            }
         }
     }
     let extracted_shifts = read_pdf_stream(pdf_path.clone(), index.clone())?;
