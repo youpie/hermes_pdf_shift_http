@@ -54,7 +54,14 @@ pub fn read_pdf_stream(
                 // let stream = lopdf::Object::Stream(*object);
                 //println!("Page {} stream: {}", page_number, stream_string);
                 let shift_number = pagenr_hashmap.get(&page_number).map(|x| x.to_owned());
-                shifts.push(parse_page(stream_string, page_number,shift_number)?);
+                let parsed_shift = parse_page(stream_string, page_number,shift_number)?;
+                // If shift Is gM remove the M and save it again
+                if parsed_shift.shift_nr.chars().nth(1) == Some('M') {
+                    let mut parsed_shift_clone = parsed_shift.clone();
+                    parsed_shift_clone.shift_nr = parsed_shift_clone.shift_nr.replace("M", "");
+                    shifts.push(parsed_shift_clone);
+                }
+                shifts.push(parsed_shift);
             }
             _ => {
                 println!("Unexpected type for Contents on page {}", page_number);

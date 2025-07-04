@@ -29,8 +29,8 @@ mod shift_indexing;
 //const PDF_PATH: &str = "Dienstboek";
 const COLLECTION_PATH: &str = "pdf_collection";
 
-static NEW_TIMETABLE_DATE: LazyLock<RwLock<Option<Date>>> = LazyLock::new(|| RwLock::new(None));
-static CURRENT_TIMETABLE: LazyLock<RwLock<PdfTimetableCollection>> =
+static UPCOMING_TIMETABLE_DATE: LazyLock<RwLock<Option<Date>>> = LazyLock::new(|| RwLock::new(None));
+static MOST_RECENT_VALID_TIMETABLE: LazyLock<RwLock<PdfTimetableCollection>> =
     LazyLock::new(|| RwLock::new(PdfTimetableCollection::new()));
 static VALID_TIMETABLES: LazyLock<RwLock<Vec<Date>>> = LazyLock::new(|| RwLock::new(vec![]));
 const DATE_FORMAT: &[BorrowedFormatItem<'_>] = format_description!["[day]-[month]-[year]"];
@@ -86,8 +86,8 @@ fn index_trip_sheets(pdf_path: PathBuf, file_id: usize) -> Result<(), Box<dyn Er
             let trip_name = cap.get(1).map_or("", |m| m.as_str()).to_string();
             
             let mut trip_split = trip_name.split(" ");
-            let trip_type = trip_split.next().unwrap_or("V");
-            let trip_number = trip_split.next().unwrap_or("1234");
+            let trip_type = trip_split.next().unwrap_or("E");
+            let trip_number = trip_split.next().unwrap_or("9999");
 
             let trip_name_formatted = trip_name.replace(" ", "");
             
@@ -208,7 +208,7 @@ fn get_valid_timetables(
         info!("writing new timetable {:?}", &next_timetable);
         fs::write("new_timetable", serde_json::to_string(&next_timetable)?)?;
     }
-    //*NEW_TIMETABLE_DATE.write().unwrap() = next_timetable;
+
     Ok((
         active_timetables,
         most_recent_valid_timetable,
@@ -275,17 +275,18 @@ async fn get_shift(
 ) -> impl Responder {
     info!("Got request for {}", shift_number);
     let custom_date = query.date.is_some();
+    let today_date = OffsetDateTime::now_utc().date();
     let current_date_option = query
         .date
         .as_ref()
         .and_then(|date_string| Date::parse(date_string, DATE_FORMAT).ok());
-    let current_date = current_date_option.unwrap_or_else(|| OffsetDateTime::now_utc().date());
+    let current_date = current_date_option.unwrap_or_else(|| today_date);
     // Normalize input by removing spaces
     let normalized_shift_number = shift_number.replace(' ', "");
     let normalized_shift_number = normalized_shift_number.to_uppercase();
-    let mut next_timetable_date = *NEW_TIMETABLE_DATE.read().unwrap();
+    let mut next_timetable_date = *UPCOMING_TIMETABLE_DATE.read().unwrap();
     let mut valid_timetables = VALID_TIMETABLES.read().unwrap().clone();
-    let mut current_timetable = match CURRENT_TIMETABLE.read() {
+    let mut most_recent_active_timetable = match MOST_RECENT_VALID_TIMETABLE.read() {
         Ok(value) => value.clone(),
         Err(err) => {
             return HttpResponse::InternalServerError().body(format!(
@@ -294,16 +295,43 @@ async fn get_shift(
             ));
         }
     };
-    if normalized_shift_number == "REFRESH".to_string() {
+    if normalized_shift_number == "REFRESH" {
         return handle_refresh_request();
     }
     else if normalized_shift_number == "INDEX" {     
         return handle_index_request(current_date_option);
     }
+    if custom_date && (current_date >= next_timetable_date.unwrap_or(Date::from_calendar_date(2500, time::Month::January, 1).unwrap()) || current_date < today_date) {
+        info!("Loading temp new timetable due to custom date");
+        (valid_timetables, most_recent_active_timetable, _) =
+            get_valid_timetables(current_date_option).unwrap();
+    }
+    // If new current date = new timetable date. Reload the timetables
+    if let Some(new_timetable_date) = next_timetable_date {
+        if current_date >= new_timetable_date && !custom_date{
+            warn!("Loading new timetable");
+            let _ = new_timetable_date;
+            (valid_timetables, most_recent_active_timetable, next_timetable_date) =
+                get_valid_timetables(current_date_option).unwrap();
+            if !custom_date {
+                *MOST_RECENT_VALID_TIMETABLE.write().unwrap() = most_recent_active_timetable.clone();
+                *UPCOMING_TIMETABLE_DATE.write().unwrap() = next_timetable_date.clone();
+                *VALID_TIMETABLES.write().unwrap() = valid_timetables.clone();
+            }
+        }
+    }
+
+    info!(
+        "Current timetable: {:?}, next date {:?}",
+        most_recent_active_timetable.files,
+        *UPCOMING_TIMETABLE_DATE.read().unwrap()
+    );
+
     if let Some(file_extension) = normalized_shift_number.split(".").last() {
         if file_extension == "JSON" {
             let shift_number_no_extension = normalized_shift_number.split(".").next().unwrap();
-            let shift_timetable_date = match find_shift(shift_number_no_extension.to_string(), valid_timetables, Some(current_timetable.clone())) {
+            info!("Got JSON request for {shift_number_no_extension}");
+            let shift_timetable_date = match find_shift(shift_number_no_extension.to_string(), valid_timetables, Some(most_recent_active_timetable.clone())) {
                 Some(data) => data.2,
                 None => return HttpResponse::NotFound().body(
                     "<h1> Sorry, something went wrong finding the JSON shift, please try again </h1>"
@@ -312,11 +340,12 @@ async fn get_shift(
             let filepath = match shift_timetable_date {
                 Some(date) => format!(
                     "{COLLECTION_PATH}/{date_str}/{shift_number_no_extension}.json",
+
                     date_str = date.format(DATE_FORMAT).unwrap()
                 ),
                 None => format!(
                     "{COLLECTION_PATH}/{date_str}/{shift_number_no_extension}.json",
-                    date_str = current_timetable.valid_from.format(DATE_FORMAT).unwrap()
+                    date_str = most_recent_active_timetable.valid_from.format(DATE_FORMAT).unwrap()
                 ),
             };
             let file_json = match fs::read_to_string(filepath) {
@@ -330,33 +359,11 @@ async fn get_shift(
                 .body(file_json);
         }
     }
-    // If new current date = new timetable date. Reload the timetables
-    if let Some(new_timetable_date) = next_timetable_date {
-        if current_date >= new_timetable_date {
-            warn!("Loading new timetable");
-            let _ = new_timetable_date;
-            (valid_timetables, current_timetable, next_timetable_date) =
-                get_valid_timetables(current_date_option).unwrap();
-            if !custom_date {
-                *CURRENT_TIMETABLE.write().unwrap() = current_timetable.clone();
-                *NEW_TIMETABLE_DATE.write().unwrap() = next_timetable_date.clone();
-                *VALID_TIMETABLES.write().unwrap() = valid_timetables.clone();
-            }
-        }
-    } else if custom_date {
-        (valid_timetables, current_timetable, _) =
-            get_valid_timetables(current_date_option).unwrap();
-    }
-
-    info!(
-        "Current timetable: {:?}, next date {:?}",
-        current_timetable.files,
-        *NEW_TIMETABLE_DATE.read().unwrap()
-    );
+    
     let (shift_path, shift_page) = match find_shift(
         shift_number.to_string(),
         valid_timetables,
-        Some(current_timetable),
+        Some(most_recent_active_timetable),
     ) {
         Some(data) => (
             data.0.files.get(&data.1.file_id).unwrap().clone(),
@@ -429,8 +436,8 @@ async fn main() -> std::io::Result<()> {
     }
     let _ = fs::write("pdf_hash", current_hash.to_le_bytes());
     let current_timetable = get_valid_timetables(None).unwrap();
-    *CURRENT_TIMETABLE.write().unwrap() = current_timetable.1;
-    *NEW_TIMETABLE_DATE.write().unwrap() = current_timetable.2;
+    *MOST_RECENT_VALID_TIMETABLE.write().unwrap() = current_timetable.1;
+    *UPCOMING_TIMETABLE_DATE.write().unwrap() = current_timetable.2;
     *VALID_TIMETABLES.write().unwrap() = current_timetable.0;
     // println!("timetable: {}",*NEW_TIMETABLE_DATE.read().unwrap());
     //let shifts = load_shifts().expect("Failed to load shifts");

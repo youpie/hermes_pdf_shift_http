@@ -2,7 +2,7 @@ use serde::Serialize;
 use thiserror::Error;
 use time::{Date, Time};
 
-#[derive(Error, Debug, Serialize)]
+#[derive(Error, Debug, Serialize, Clone)]
 pub enum ShiftParseError {
     #[error("Shift on page {page_number} had a generic error{error_string}\nline: {line:?}",error_string = error.to_string())]
     GenericShiftError {
@@ -23,7 +23,7 @@ pub enum ShiftParseError {
     },
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub enum ShiftValid {
     Weekdays,
     Saturday,
@@ -31,7 +31,7 @@ pub enum ShiftValid {
     Unknown,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub enum ShiftType {
     Vroeg,
     Tussen,
@@ -43,13 +43,13 @@ pub enum ShiftType {
     Laat,
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Serialize, PartialEq, Clone)]
 pub enum JobDrivingType {
     Lijn(u32),
     Mat,
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Serialize, PartialEq, Clone)]
 pub enum JobMessageType {
     Meenemen { dienstnummers: Vec<u32> },
     Passagieren { dienstnummer: u32, omloop: String },
@@ -58,7 +58,7 @@ pub enum JobMessageType {
     Other(String),
 }
 
-#[derive(Debug, Serialize,PartialEq)]
+#[derive(Debug, Serialize,PartialEq, Clone)]
 pub enum JobType {
     Rijden { drive_type: JobDrivingType },
     Pauze,
@@ -72,7 +72,7 @@ pub enum JobType {
     Unknown,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct ShiftJob {
     pub job_type: JobType,
     pub start: Option<Time>,
@@ -90,7 +90,7 @@ impl ShiftJob {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct Shift {
     pub shift_nr: String,
     pub valid_on: ShiftValid,
