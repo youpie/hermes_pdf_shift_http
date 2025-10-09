@@ -1,5 +1,6 @@
 use crate::GenResult;
 
+#[allow(dead_code)]
 pub trait OptionResult<T> {
     fn result(self) -> GenResult<T>;
     fn result_reason(self, reason: &str) -> GenResult<T>;
