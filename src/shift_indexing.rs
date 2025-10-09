@@ -1,6 +1,7 @@
 #![allow(warnings)]
 
 use crate::{GenResult, ShiftData};
+use float_ord::FloatOrd;
 use lopdf::Document;
 use regex::Regex;
 use serde::Serialize;
@@ -8,7 +9,6 @@ pub use shift_scructs::*;
 use std::collections::HashMap;
 use std::ops::Neg;
 use std::path::PathBuf;
-use float_ord::FloatOrd;
 use time::format_description::BorrowedFormatItem;
 use time::macros::format_description;
 use time::{Date, Time, error};
@@ -54,7 +54,7 @@ pub fn read_pdf_stream(
                 // let stream = lopdf::Object::Stream(*object);
                 //println!("Page {} stream: {}", page_number, stream_string);
                 let shift_number = pagenr_hashmap.get(&page_number).map(|x| x.to_owned());
-                let parsed_shift = parse_page(stream_string, page_number,shift_number)?;
+                let parsed_shift = parse_page(stream_string, page_number, shift_number)?;
                 // If shift Is gM remove the M and save it again
                 if parsed_shift.shift_nr.chars().nth(1) == Some('M') {
                     let mut parsed_shift_clone = parsed_shift.clone();
@@ -82,7 +82,11 @@ fn reverse_pagenr_hashmap(hashmap: HashMap<String, ShiftData>) -> HashMap<u32, S
     new_hashmap
 }
 
-fn parse_page(page_stream: String, page_number: u32, shift_number: Option<String>) -> GenResult<Shift> {
+fn parse_page(
+    page_stream: String,
+    page_number: u32,
+    shift_number: Option<String>,
+) -> GenResult<Shift> {
     let re = Regex::new(r"\((.*?)\)")?; // Match text inside parentheses
     let mut line_elements: Vec<(String, (f32, f32))> = vec![];
     let page_stream_clone = page_stream.clone();
@@ -125,7 +129,13 @@ fn parse_page(page_stream: String, page_number: u32, shift_number: Option<String
             line_elements.push((cap[1].to_string(), coordinate));
         }
     }
-    let minimal_x = line_elements.iter().map(|val| FloatOrd(val.1.0)).min().unwrap_or(FloatOrd(0.0)).0.neg();
+    let minimal_x = line_elements
+        .iter()
+        .map(|val| FloatOrd(val.1.0))
+        .min()
+        .unwrap_or(FloatOrd(0.0))
+        .0
+        .neg();
     let shift = get_line_element(line_elements, minimal_x, page_number, shift_number)?;
     Ok(shift)
 }
@@ -134,7 +144,7 @@ fn get_line_element(
     items: Vec<(String, (f32, f32))>,
     offset: f32,
     page_number: u32,
-    shift_number: Option<String>
+    shift_number: Option<String>,
 ) -> GenResult<Shift> {
     let mut line_errors: Vec<ShiftParseError> = vec![];
 
@@ -254,7 +264,6 @@ fn get_line_information(
     }
     //println!("Line: {}, x: {}",line, current_x);
     if current_y < 50.0 || current_y > 750.0 {
-
         if let metadata = line.clone() {
             identify_metadata(
                 &mut *start_date,
@@ -263,7 +272,7 @@ fn get_line_information(
                 &mut *location,
                 metadata,
                 current_y,
-                current_x
+                current_x,
             )
             .ok_or(ShiftParseError::MetadataFailure {
                 page_number,
@@ -273,7 +282,6 @@ fn get_line_information(
     } else if current_x >= lijn_lower && current_x <= lijn_upper {
         *lijn_number = Some(line);
     } else if current_x >= omloop_lower && current_x <= omloop_upper {
-
         *omloop = Some(line);
     } else if current_x >= rit_lower && current_x <= rit_upper {
         *rit = Some(line);
@@ -297,7 +305,7 @@ fn identify_metadata(
     location: &mut String,
     metadata: String,
     current_y: f32,
-    current_x: f32
+    current_x: f32,
 ) -> Option<()> {
     if metadata.contains("Ingangsdatum ") {
         *start_date = Date::parse(metadata.split("Ingangsdatum ").last()?, DATE_FORMAT).ok()?;
@@ -305,6 +313,10 @@ fn identify_metadata(
         *shift_number = metadata.split("Dienst ").last()?.to_owned();
     } else if metadata.contains("MA/DI/WO/DO/VR") {
         *valid_on = ShiftValid::Weekdays;
+    } else if metadata.contains("MA/DI/DO/VR") {
+        *valid_on = ShiftValid::WeekdaysExceptWednesday;
+    } else if metadata.contains("WO") {
+        *valid_on = ShiftValid::Wednesday;
     } else if metadata.contains("ZA") {
         *valid_on = ShiftValid::Saturday;
     } else if metadata.contains("ZO") {

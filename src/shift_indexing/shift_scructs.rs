@@ -26,6 +26,9 @@ pub enum ShiftParseError {
 #[derive(Debug, Serialize, Clone)]
 pub enum ShiftValid {
     Weekdays,
+    Wednesday,
+    #[serde(rename = "Weekdays except Wednesdays")]
+    WeekdaysExceptWednesday,
     Saturday,
     Sunday,
     Unknown,
@@ -58,7 +61,7 @@ pub enum JobMessageType {
     Other(String),
 }
 
-#[derive(Debug, Serialize,PartialEq, Clone)]
+#[derive(Debug, Serialize, PartialEq, Clone)]
 pub enum JobType {
     Rijden { drive_type: JobDrivingType },
     Pauze,
@@ -85,7 +88,14 @@ pub struct ShiftJob {
 
 impl ShiftJob {
     pub fn empty(&self) -> bool {
-        if (self.job_type == JobType::Unknown && self.start.is_none() && self.end.is_none() && self.start_location.is_none() && self.end_location.is_none()) {return true;}
+        if (self.job_type == JobType::Unknown
+            && self.start.is_none()
+            && self.end.is_none()
+            && self.start_location.is_none()
+            && self.end_location.is_none())
+        {
+            return true;
+        }
         false
     }
 }
