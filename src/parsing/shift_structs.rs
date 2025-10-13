@@ -1,8 +1,8 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::{Date, Time};
 
-#[derive(Error, Debug, Serialize, Clone)]
+#[derive(Error, Debug, Serialize, Deserialize, Clone)]
 pub enum ShiftParseError {
     #[error("Shift on page {page_number} had a generic error{error_string}\nline: {line:?}",error_string = error.to_string())]
     GenericShiftError {
@@ -17,21 +17,24 @@ pub enum ShiftParseError {
     },
     #[error("{function}: Unwrapped an option while parsing {parsing_job:?}\nline: {line:?}")]
     Option {
-        function: &'static str,
+        function: String,
         parsing_job: Option<String>,
         line: Option<String>,
     },
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum ShiftValid {
     Weekdays,
+    Wednesday,
+    #[serde(rename = "Weekdays except Wednesdays")]
+    WeekdaysExceptWednesday,
     Saturday,
     Sunday,
     Unknown,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum ShiftType {
     Vroeg,
     Tussen,
@@ -43,13 +46,13 @@ pub enum ShiftType {
     Laat,
 }
 
-#[derive(Debug, Serialize, PartialEq, Clone)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub enum JobDrivingType {
     Lijn(u32),
     Mat,
 }
 
-#[derive(Debug, Serialize, PartialEq, Clone)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub enum JobMessageType {
     Meenemen { dienstnummers: Vec<u32> },
     Passagieren { dienstnummer: u32, omloop: String },
@@ -58,7 +61,7 @@ pub enum JobMessageType {
     Other(String),
 }
 
-#[derive(Debug, Serialize,PartialEq, Clone)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub enum JobType {
     Rijden { drive_type: JobDrivingType },
     Pauze,
@@ -72,7 +75,7 @@ pub enum JobType {
     Unknown,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ShiftJob {
     pub job_type: JobType,
     pub start: Option<Time>,
@@ -85,12 +88,19 @@ pub struct ShiftJob {
 
 impl ShiftJob {
     pub fn empty(&self) -> bool {
-        if (self.job_type == JobType::Unknown && self.start.is_none() && self.end.is_none() && self.start_location.is_none() && self.end_location.is_none()) {return true;}
+        if (self.job_type == JobType::Unknown
+            && self.start.is_none()
+            && self.end.is_none()
+            && self.start_location.is_none()
+            && self.end_location.is_none())
+        {
+            return true;
+        }
         false
     }
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, Deserialize)]
 pub struct Shift {
     pub shift_nr: String,
     pub valid_on: ShiftValid,
