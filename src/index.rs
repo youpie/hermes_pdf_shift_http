@@ -4,7 +4,7 @@ use actix_web::HttpResponse;
 use serde::Serialize;
 use time::{Date, OffsetDateTime};
 
-use crate::{GenResult, PdfTimetableCollection};
+use crate::{GenResult, collection::PdfTimetableCollection};
 
 #[derive(Serialize)]
 pub struct IndexShift {

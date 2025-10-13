@@ -1,11 +1,11 @@
+use crate::collection::{PdfTimetableCollection, ShiftData};
+use crate::parsing::{shift_parsing::read_pdf_stream, shift_structs::Shift};
 use actix_web::{App, HttpResponse, HttpServer, Responder, get, web};
 use index::handle_index_request;
 use lopdf::Document;
 use qpdf::QPdf;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use shift_indexing::Shift;
-use shift_indexing::read_pdf_stream;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::{self};
@@ -25,50 +25,35 @@ extern crate pretty_env_logger;
 #[macro_use]
 extern crate log;
 
+mod collection;
 mod error;
 mod index;
-mod shift_indexing;
+mod parsing;
+
+type ValidTimetables = Vec<Date>;
+type MostRecentCollection = PdfTimetableCollection;
+type NextTimetableChangeDate = Option<Date>;
 
 //const PDF_PATH: &str = "Dienstboek";
 const COLLECTION_PATH: &str = "pdf_collection";
 
 // Date of next timetable change
-static UPCOMING_TIMETABLE_DATE: LazyLock<RwLock<Option<Date>>> =
+static UPCOMING_TIMETABLE_DATE: LazyLock<RwLock<NextTimetableChangeDate>> =
     LazyLock::new(|| RwLock::new(None));
 
 // Date of last valid timetable
-static MOST_RECENT_VALID_TIMETABLE: LazyLock<RwLock<PdfTimetableCollection>> =
+static MOST_RECENT_VALID_TIMETABLE: LazyLock<RwLock<MostRecentCollection>> =
     LazyLock::new(|| RwLock::new(PdfTimetableCollection::new()));
 
 // List of all valid timetables
-static VALID_TIMETABLES: LazyLock<RwLock<Vec<Date>>> = LazyLock::new(|| RwLock::new(vec![]));
+static VALID_TIMETABLES: LazyLock<RwLock<ValidTimetables>> = LazyLock::new(|| RwLock::new(vec![]));
+
+static ALL_TIMETABLE_COLLECTIONS: LazyLock<RwLock<Vec<ValidTimetables>>> =
+    LazyLock::new(|| RwLock::new(vec![]));
+
 const DATE_FORMAT: &[BorrowedFormatItem<'_>] = format_description!["[day]-[month]-[year]"];
 
 pub type GenResult<T> = Result<T, Box<dyn std::error::Error>>;
-
-#[derive(Deserialize, Serialize, Debug, Clone)]
-struct ShiftData {
-    pages: Vec<u32>,
-    file_id: usize,
-    shift_prefix: String,
-}
-
-#[derive(Deserialize, Serialize, Debug, Clone)]
-struct PdfTimetableCollection {
-    valid_from: Date,
-    files: HashMap<usize, String>,
-    pages: HashMap<String, ShiftData>,
-}
-
-impl PdfTimetableCollection {
-    fn new() -> Self {
-        Self {
-            valid_from: Date::from_iso_week_date(2000, 20, time::Weekday::Monday).unwrap(),
-            files: HashMap::new(),
-            pages: HashMap::new(),
-        }
-    }
-}
 
 #[derive(Deserialize)]
 struct ShiftQuery {
@@ -172,10 +157,6 @@ fn save_extracted_shifts(path: PathBuf, shifts: Vec<Shift>) -> GenResult<()> {
     Ok(())
 }
 
-type ValidTimetables = Vec<Date>;
-type MostRecentCollection = PdfTimetableCollection;
-type NextTimetableChangeDate = Option<Date>;
-
 // load all pdf_collection files. And determine which one is current
 // Also if it exists, save the date of when it gets invalidated (when the Next timetable starts)
 fn get_valid_timetables(
@@ -199,20 +180,20 @@ fn get_valid_timetables(
         if file.file_type()?.is_dir() {
             continue;
         }
-        let temp_current_collection_file: PdfTimetableCollection =
+        let current_collection_file: PdfTimetableCollection =
             serde_json::from_slice(&fs::read(file.path())?)?;
         //if the current collection date is higher than the last but lower than the system date. Make this the most recent one
-        if temp_current_collection_file.valid_from > most_recent_valid_shift_collection.valid_from
-            && temp_current_collection_file.valid_from <= current_date
+        if current_collection_file.valid_from > most_recent_valid_shift_collection.valid_from
+            && current_collection_file.valid_from <= current_date
         {
-            most_recent_valid_shift_collection = temp_current_collection_file.clone();
-        } else if temp_current_collection_file.valid_from > current_date {
-            upcoming_timetables.push(temp_current_collection_file.valid_from);
+            most_recent_valid_shift_collection = current_collection_file.clone();
+        } else if current_collection_file.valid_from > current_date {
+            upcoming_timetables.push(current_collection_file.valid_from);
         }
 
         // Create a list of all currently valid timetables
-        if temp_current_collection_file.valid_from <= current_date {
-            active_timetables.push(temp_current_collection_file.valid_from)
+        if current_collection_file.valid_from <= current_date {
+            active_timetables.push(current_collection_file.valid_from)
         }
     }
     active_timetables.sort_by_key(|value| *value);

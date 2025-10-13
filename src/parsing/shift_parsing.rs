@@ -1,19 +1,18 @@
 #![allow(warnings)]
 
-use crate::{GenResult, ShiftData};
+use crate::GenResult;
+use crate::collection::ShiftData;
+use crate::parsing::shift_structs::*;
 use float_ord::FloatOrd;
 use lopdf::Document;
 use regex::Regex;
 use serde::Serialize;
-pub use shift_scructs::*;
 use std::collections::HashMap;
 use std::ops::Neg;
 use std::path::PathBuf;
 use time::format_description::BorrowedFormatItem;
 use time::macros::format_description;
 use time::{Date, Time, error};
-
-mod shift_scructs;
 
 const DATE_FORMAT: &[BorrowedFormatItem<'_>] = format_description!["[day]-[month]-[year]"];
 
