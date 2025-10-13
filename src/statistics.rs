@@ -75,15 +75,15 @@ impl Statistics {
         let mut shift = vec![];
         for file in files {
             match || -> GenResult<String> {
-                let shift_parse = std::fs::read_to_string(file)?;
+                let shift_parse = std::fs::read_to_string(&file)?;
                 let shift: Shift = serde_json::from_str(&shift_parse)?;
                 if shift.parse_error.is_some_and(|x| !x.is_empty()) {
-                    Ok(shift.shift_nr)
+                    Ok(file.to_string_lossy().to_string())
                 } else {
                     Err("no error".into())
                 }
             }() {
-                Ok(shift_nr) => shift.push(shift_nr),
+                Ok(path) => shift.push(path),
                 Err(_) => (),
             };
         }
