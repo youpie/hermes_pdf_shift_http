@@ -27,13 +27,13 @@ impl StrTime for String {
     }
 }
 
-pub fn read_pdf_stream(
-    pdf_path: PathBuf,
-    shift_pages: HashMap<String, ShiftData>,
+pub fn parse_pdf(
+    pdf_path: &PathBuf,
+    shift_data: HashMap<String, ShiftData>,
 ) -> GenResult<Vec<Shift>> {
     let doc = Document::load(pdf_path)?;
     let pages = doc.get_pages();
-    let pagenr_hashmap = reverse_pagenr_hashmap(shift_pages);
+    let pagenr_hashmap = reverse_pagenr_hashmap(shift_data);
     let mut i = 0;
     let mut shifts: Vec<Shift> = vec![];
     for (&page_number, &page_id) in pages.iter() {
@@ -52,13 +52,15 @@ pub fn read_pdf_stream(
                 let stream_string = stream_string.replace("Tf", "");
                 // let stream = lopdf::Object::Stream(*object);
                 //println!("Page {} stream: {}", page_number, stream_string);
-                let shift_number = pagenr_hashmap.get(&page_number).map(|x| x.to_owned());
+                let shift_number = match pagenr_hashmap.get(&page_number) {
+                    Some(shift_number) => shift_number.to_owned(),
+                    None => continue,
+                };
                 let parsed_shift = parse_page(stream_string, page_number, shift_number)?;
-                // If shift Is gM remove the M and save it again
-                if parsed_shift.shift_nr.chars().nth(1) == Some('M') {
-                    let mut parsed_shift_clone = parsed_shift.clone();
-                    parsed_shift_clone.shift_nr = parsed_shift_clone.shift_nr.replace("M", "");
-                    shifts.push(parsed_shift_clone);
+                if let Some(errors) = parsed_shift.parse_error.clone()
+                    && !errors.is_empty()
+                {
+                    error!("ERROR IN SHIFT {}\n{:#?}", parsed_shift.shift_nr, errors);
                 }
                 shifts.push(parsed_shift);
             }
@@ -81,11 +83,7 @@ fn reverse_pagenr_hashmap(hashmap: HashMap<String, ShiftData>) -> HashMap<u32, S
     new_hashmap
 }
 
-fn parse_page(
-    page_stream: String,
-    page_number: u32,
-    shift_number: Option<String>,
-) -> GenResult<Shift> {
+fn parse_page(page_stream: String, page_number: u32, shift_number: String) -> GenResult<Shift> {
     let re = Regex::new(r"\((.*?)\)")?; // Match text inside parentheses
     let mut line_elements: Vec<(String, (f32, f32))> = vec![];
     let page_stream_clone = page_stream.clone();
@@ -143,7 +141,7 @@ fn get_line_element(
     items: Vec<(String, (f32, f32))>,
     offset: f32,
     page_number: u32,
-    shift_number: Option<String>,
+    shift_number: String,
 ) -> GenResult<Shift> {
     let mut line_errors: Vec<ShiftParseError> = vec![];
 
@@ -165,7 +163,7 @@ fn get_line_element(
     let mut eind: Option<_> = None;
     let mut start_date = Date::from_calendar_date(2025, time::Month::June, 29)?;
     let mut valid_on = ShiftValid::Unknown;
-    let mut shift_number = shift_number.unwrap_or_else(|| String::new()).clone();
+    let mut shift_number = shift_number;
     let mut location = String::new();
     let mut jobs = vec![];
     for item in items {
@@ -195,13 +193,13 @@ fn get_line_element(
         last_y = item.1.1;
     }
     Ok(Shift {
-        shift_nr: shift_number.to_string(),
+        shift_nr: shift_number,
         valid_on,
         location,
         shift_type: None,
         job: jobs,
         starting_date: start_date,
-        parse_error: None,
+        parse_error: Some(line_errors),
     })
 }
 
@@ -262,7 +260,7 @@ fn get_line_information(
         *eind = None;
     }
     //println!("Line: {}, x: {}",line, current_x);
-    if current_y < 50.0 || current_y > 750.0 {
+    if current_y < 50.0 || current_y > 735.0 {
         if let metadata = line.clone() {
             identify_metadata(
                 &mut *start_date,
@@ -308,8 +306,9 @@ fn identify_metadata(
 ) -> Option<()> {
     if metadata.contains("Ingangsdatum ") {
         *start_date = Date::parse(metadata.split("Ingangsdatum ").last()?, DATE_FORMAT).ok()?;
-    } else if metadata.contains("Dienst ") || shift_number.is_empty() {
-        *shift_number = metadata.split("Dienst ").last()?.to_owned();
+    } else if metadata.contains("Dienst ") {
+        let shift_number_temp = metadata.split("Dienst ").last()?.to_owned();
+        *shift_number = shift_number_temp.replace(" ", "");
     } else if metadata.contains("MA/DI/WO/DO/VR") {
         *valid_on = ShiftValid::Weekdays;
     } else if metadata.contains("MA/DI/DO/VR") {
@@ -405,7 +404,7 @@ fn to_iso8601(time_string: String, job_name: &str) -> Result<Option<Time>, Shift
         })?
         .parse::<u8>()
         .map_err(|err| ShiftParseError::GenericShiftError {
-            page_number: 0,
+            page_number: 1,
             error: err.to_string(),
             line: Some(time_string.clone()),
         })?;
@@ -418,7 +417,7 @@ fn to_iso8601(time_string: String, job_name: &str) -> Result<Option<Time>, Shift
         })?
         .parse::<u8>()
         .map_err(|err| ShiftParseError::GenericShiftError {
-            page_number: 0,
+            page_number: 2,
             error: err.to_string(),
             line: Some(time_string.clone()),
         })?;

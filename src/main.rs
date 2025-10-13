@@ -1,5 +1,6 @@
 use crate::collection::{PdfTimetableCollection, ShiftData};
-use crate::parsing::{shift_parsing::read_pdf_stream, shift_structs::Shift};
+use crate::parsing::{shift_parsing::parse_pdf, shift_structs::Shift};
+use actix_web::http::header::ContentType;
 use actix_web::{App, HttpResponse, HttpServer, Responder, get, web};
 use index::handle_index_request;
 use lopdf::Document;
@@ -54,10 +55,57 @@ struct ShiftQuery {
     date: Option<String>, // Optional date query parameter
 }
 
+fn load_pdf_and_index(file_paths: Vec<PathBuf>) {
+    warn!("REMOVING {}", COLLECTION_PATH);
+    _ = PdfTimetableCollection::load_timetables_from_disk();
+    _ = fs::remove_dir_all(COLLECTION_PATH);
+    _ = fs::create_dir(COLLECTION_PATH);
+    _ = file_paths
+        .iter()
+        .enumerate()
+        .map(|path| parse_trip_sheets(path.1.into(), path.0).unwrap())
+        .collect::<Vec<_>>();
+}
+
 // Load every PDF and group them
-fn index_trip_sheets(pdf_path: PathBuf, file_id: usize) -> Result<(), Box<dyn Error>> {
+fn parse_trip_sheets(pdf_path: PathBuf, file_id: usize) -> Result<(), Box<dyn Error>> {
     // Load the PDF document.
-    let doc = Document::load(pdf_path.clone())?;
+    let shift_data_map = load_shift_data(&pdf_path, file_id)?;
+    let parsed_shifts = parse_pdf(&pdf_path, shift_data_map.clone())?;
+    let valid_from_day = parsed_shifts
+        .first()
+        .result_reason("No shifts found")?
+        .starting_date;
+    let valid_from_string = valid_from_day.format(DATE_FORMAT).unwrap();
+    let mut output_path = PathBuf::from(format!("{}/{}", COLLECTION_PATH, valid_from_string));
+    save_extracted_shifts(output_path.clone(), parsed_shifts)?;
+    output_path.set_extension("json");
+    let pdf_collection: PdfTimetableCollection = if let Ok(file) = fs::read_to_string(&output_path)
+    {
+        info!("Extending existing collection {:?}", &output_path);
+        let mut pdf_collection: PdfTimetableCollection = serde_json::from_str(&file)?;
+        pdf_collection
+            .files
+            .insert(file_id, pdf_path.to_string_lossy().to_string());
+        pdf_collection.pages.extend(shift_data_map);
+        pdf_collection
+    } else {
+        info!("Writing new collection {:?}", &output_path);
+        PdfTimetableCollection {
+            valid_from: valid_from_day,
+            files: HashMap::from([(file_id, pdf_path.to_string_lossy().to_string())]),
+            pages: shift_data_map,
+        }
+    };
+
+    // Serialize the index into pretty JSON.
+    let index_json = serde_json::to_string_pretty(&pdf_collection)?;
+    fs::write(&output_path, index_json)?;
+    Ok(())
+}
+
+fn load_shift_data(path: &PathBuf, file_id: usize) -> GenResult<HashMap<String, ShiftData>> {
+    let doc = Document::load(&path)?;
 
     // Define a regex pattern that finds "Dienst" followed by a trip number.
     let re = Regex::new(r"Dienst\s*(\b[A-Z]{1,2} \d{4}\b)")?;
@@ -73,58 +121,27 @@ fn index_trip_sheets(pdf_path: PathBuf, file_id: usize) -> Result<(), Box<dyn Er
         for cap in re.captures_iter(&text) {
             // Capture the group that contains the trip number.
             let shift_name = cap.get(1).map_or("", |m| m.as_str()).to_string();
-
-            let shift_name_formatted = shift_name.replace(" ", "");
-
-            let shift_number: String = shift_name_formatted
+            let shift_number: String = shift_name
                 .chars()
                 .filter(|character| character.is_numeric())
                 .collect();
-            let shift_prefix: String = shift_name_formatted
+            let shift_prefix: String = shift_name
                 .chars()
                 .filter(|character| character.is_alphabetic())
                 .collect();
-
-            // Add the page number to the index for this trip number.
-
-            index
-                .entry(shift_number)
-                .and_modify(|pages| pages.pages.push(*page_num))
-                .or_insert(ShiftData {
-                    pages: vec![*page_num],
-                    file_id,
-                    shift_prefix,
-                });
+            if !shift_number.is_empty() {
+                index
+                    .entry(shift_number)
+                    .and_modify(|shift_data| shift_data.pages.push(*page_num))
+                    .or_insert(ShiftData {
+                        pages: vec![*page_num],
+                        file_id,
+                        shift_prefix,
+                    });
+            }
         }
     }
-    let extracted_shifts = read_pdf_stream(pdf_path.clone(), index.clone())?;
-    let valid_from_day = extracted_shifts.first().unwrap().starting_date.clone();
-    let valid_from_string = valid_from_day.format(DATE_FORMAT).unwrap();
-    let mut output_path = PathBuf::from(format!("{}/{}", COLLECTION_PATH, valid_from_string));
-    save_extracted_shifts(output_path.clone(), extracted_shifts)?;
-    output_path.set_extension("json");
-    let pdf_collection_output: PdfTimetableCollection;
-    if let Ok(file) = fs::read(&output_path) {
-        let mut pdf_collection: PdfTimetableCollection = serde_json::from_slice(&file)?;
-        pdf_collection
-            .files
-            .insert(file_id, pdf_path.to_str().unwrap().to_string());
-        pdf_collection.pages.extend(index);
-        pdf_collection_output = pdf_collection;
-        info!("Extending existing collection {:?}", &output_path);
-    } else {
-        pdf_collection_output = PdfTimetableCollection {
-            valid_from: valid_from_day,
-            files: HashMap::from([(file_id, pdf_path.to_str().unwrap().to_string())]),
-            pages: index,
-        };
-        info!("Writing new collection {:?}", &output_path);
-    }
-
-    // Serialize the index into pretty JSON.
-    let index_json = serde_json::to_string_pretty(&pdf_collection_output)?;
-    fs::write(&output_path, index_json)?;
-    Ok(())
+    Ok(index)
 }
 
 fn save_extracted_shifts(path: PathBuf, shifts: Vec<Shift>) -> GenResult<()> {
@@ -134,17 +151,9 @@ fn save_extracted_shifts(path: PathBuf, shifts: Vec<Shift>) -> GenResult<()> {
         Err(kind) => return Err(Box::new(kind)),
     };
     for shift in shifts {
-        if shift.shift_nr == "".to_string() {
-            continue;
-        }
-        let shift_name = &shift.shift_nr.replace(" ", "");
-        let shift_name: String = shift_name
-            .chars()
-            .filter(|character| !character.is_alphabetic())
-            .collect();
         let shift_json = serde_json::to_string_pretty(&shift)?;
         let mut shift_path = path.clone();
-        shift_path.push(shift_name);
+        shift_path.push(shift.shift_nr);
         shift_path.set_extension("json");
         fs::write(shift_path, shift_json)?;
     }
@@ -186,10 +195,9 @@ fn find_shift(
     shift_number: &str,
     valid_timetables: &mut Vec<PdfTimetableCollection>,
 ) -> Option<(PdfTimetableCollection, ShiftData)> {
-    // Find the most recent active timetable for this shift
     let current_timetable = match valid_timetables.pop() {
         Some(timetable) => timetable,
-        None => return None,
+        None => return None, // If there are no more valid timetables while this check runs, the shift is not available
     };
     match current_timetable.clone().pages.get(shift_number) {
         Some(shift) => Some((current_timetable, shift.clone())),
@@ -211,7 +219,7 @@ fn handle_refresh_request() -> HttpResponse {
         }
     }
     load_pdf_and_index(files);
-    _ = PdfTimetableCollection::load_timetables_from_disk();
+
     return HttpResponse::Accepted().body("Shifts sucessfully indexed");
 }
 
@@ -242,6 +250,7 @@ async fn get_shift(request: web::Path<String>, query: web::Query<ShiftQuery>) ->
 
     let request_uppercase = request.to_uppercase();
 
+    // Handle specific request
     if request_uppercase == "REFRESH" {
         return handle_refresh_request();
     } else if request_uppercase == "INDEX" {
@@ -252,34 +261,41 @@ async fn get_shift(request: web::Path<String>, query: web::Query<ShiftQuery>) ->
         Ok(result) => result,
         Err(err) => return return_error(err.to_string()),
     };
-    let mut shift_split = request_uppercase.split(".");
-    let shift_number = shift_split.next().unwrap_or(&request_uppercase);
-    let shift_extension_option = shift_split.next();
 
-    let shift_prefix: String = shift_number.chars().filter(|c| c.is_alphabetic()).collect();
-    let numeric_shift_number: String = shift_number.chars().filter(|c| c.is_numeric()).collect();
+    let mut shift_split = request_uppercase.split(".");
+    let shift = shift_split.next().unwrap_or(&request_uppercase);
+    let request_extension_option = shift_split.next();
+
+    let shift_prefix: String = shift.chars().filter(|c| c.is_alphabetic()).collect();
+    let numeric_shift_number: String = shift.chars().filter(|c| c.is_numeric()).collect();
 
     let (shift_collection, shift_data) =
         match find_shift(&numeric_shift_number, &mut valid_timetables) {
             Some(shift) => shift,
             None => {
-                return HttpResponse::NotFound().body("<h1>Sorry, that shift was not found</h1>");
+                return HttpResponse::NotFound()
+                    .body(format!("<h1>Sorry, shift {shift} was not found</h1>"));
             }
         };
 
     // Check for correct shift prefix
     if !shift_prefix.is_empty() && shift_prefix != shift_data.shift_prefix {
-        return HttpResponse::NotAcceptable()
+        // Add exceptions for the shift prefix check
+        if !(shift_prefix == "GM" && shift_data.shift_prefix == "G"
+            || shift_prefix == "G" && shift_data.shift_prefix == "GM")
+        {
+            return HttpResponse::NotAcceptable()
             .body(format!("<h1>Incorrect shift type specified.</h1> <br><h2>Please remove \"{shift_prefix}\" or change request to \"{}{numeric_shift_number}\"</h2>",shift_data.shift_prefix));
+        }
     }
 
-    if let Some(shift_extension) = shift_extension_option
+    if let Some(shift_extension) = request_extension_option
         && shift_extension == "JSON"
     {
         info!("Got JSON request for {request_uppercase}");
         match find_json_shift(numeric_shift_number, shift_collection.valid_from) {
             Ok(json) => HttpResponse::Ok()
-                .content_type("application/json")
+                .content_type(ContentType::json())
                 .body(json),
             Err(err) => return_error(err.to_string()),
         }
@@ -333,17 +349,6 @@ fn find_pdf_shift(
     }
 
     Ok(shift_pdf.writer().write_to_memory()?)
-}
-
-fn load_pdf_and_index(file_paths: Vec<PathBuf>) {
-    warn!("REMOVING {}", COLLECTION_PATH);
-    let _ = fs::remove_dir_all(COLLECTION_PATH);
-    let _ = fs::create_dir(COLLECTION_PATH);
-    let _ = file_paths
-        .iter()
-        .enumerate()
-        .map(|path| index_trip_sheets(path.1.into(), path.0).unwrap())
-        .collect::<Vec<_>>();
 }
 
 #[actix_web::main]

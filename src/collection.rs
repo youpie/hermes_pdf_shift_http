@@ -27,14 +27,6 @@ pub struct PdfTimetableCollection {
 }
 
 impl PdfTimetableCollection {
-    pub fn new() -> Self {
-        Self {
-            valid_from: Date::from_iso_week_date(2000, 20, time::Weekday::Monday).unwrap(),
-            files: HashMap::new(),
-            pages: HashMap::new(),
-        }
-    }
-
     pub fn load_timetables_from_disk() -> GenResult<()> {
         let collections_on_disk = fs::read_dir("pdf_collection")?;
         let mut collections: Vec<Self> = vec![];
