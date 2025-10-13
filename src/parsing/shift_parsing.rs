@@ -93,7 +93,7 @@ fn parse_page(page_stream: String, page_number: u32, shift_number: String) -> Ge
                 .lines()
                 .nth(line_number - 1)
                 .ok_or(ShiftParseError::Option {
-                    function: "line coordinates",
+                    function: "line coordinates".to_string(),
                     parsing_job: None,
                     line: None,
                 })?
@@ -102,7 +102,7 @@ fn parse_page(page_stream: String, page_number: u32, shift_number: String) -> Ge
                 coordinate_split
                     .next()
                     .ok_or(ShiftParseError::Option {
-                        function: "line x coordinate",
+                        function: "line x coordinate".to_string(),
                         parsing_job: None,
                         line: None,
                     })?
@@ -110,7 +110,7 @@ fn parse_page(page_stream: String, page_number: u32, shift_number: String) -> Ge
                 coordinate_split
                     .next()
                     .ok_or(ShiftParseError::Option {
-                        function: "line y coordinate",
+                        function: "line y coordinate".to_string(),
                         parsing_job: None,
                         line: None,
                     })?
@@ -148,7 +148,7 @@ fn get_line_element(
     let mut last_y = items
         .first()
         .ok_or(ShiftParseError::Option {
-            function: "first line",
+            function: "first line".to_string(),
             parsing_job: None,
             line: None,
         })?
@@ -398,7 +398,7 @@ fn to_iso8601(time_string: String, job_name: &str) -> Result<Option<Time>, Shift
     let hour_noniso = time_split
         .next()
         .ok_or(ShiftParseError::Option {
-            function: "Time hour",
+            function: "Time hour".to_string(),
             parsing_job: Some(job_name.to_string()),
             line: Some(time_string.clone()),
         })?
@@ -411,7 +411,7 @@ fn to_iso8601(time_string: String, job_name: &str) -> Result<Option<Time>, Shift
     let minute = time_split
         .next()
         .ok_or(ShiftParseError::Option {
-            function: "Time minute",
+            function: "Time minute".to_string(),
             parsing_job: Some(job_name.to_string()),
             line: Some(time_string.clone()),
         })?

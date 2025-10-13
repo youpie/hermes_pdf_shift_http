@@ -1,5 +1,6 @@
 use crate::collection::{PdfTimetableCollection, ShiftData};
 use crate::parsing::{shift_parsing::parse_pdf, shift_structs::Shift};
+use crate::statistics::handle_stats_request;
 use actix_web::http::header::ContentType;
 use actix_web::{App, HttpResponse, HttpServer, Responder, get, web};
 use index::handle_index_request;
@@ -30,6 +31,7 @@ mod collection;
 mod error;
 mod index;
 mod parsing;
+mod statistics;
 
 type ValidTimetables = Vec<PdfTimetableCollection>;
 type NextTimetableChangeDate = Option<Date>;
@@ -255,6 +257,8 @@ async fn get_shift(request: web::Path<String>, query: web::Query<ShiftQuery>) ->
         return handle_refresh_request();
     } else if request_uppercase == "INDEX" {
         return handle_index_request(custom_date_option);
+    } else if request_uppercase == "STATS" {
+        return handle_stats_request(custom_date_option);
     }
 
     let mut valid_timetables = match load_timetable_data(custom_date_option) {
