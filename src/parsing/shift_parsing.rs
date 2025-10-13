@@ -57,9 +57,7 @@ pub fn parse_pdf(
                     None => continue,
                 };
                 let parsed_shift = parse_page(stream_string, page_number, shift_number)?;
-                if let Some(errors) = parsed_shift.parse_error.clone()
-                    && !errors.is_empty()
-                {
+                if let Some(errors) = parsed_shift.parse_error.clone() {
                     error!("ERROR IN SHIFT {}\n{:#?}", parsed_shift.shift_nr, errors);
                 }
                 shifts.push(parsed_shift);
@@ -199,7 +197,11 @@ fn get_line_element(
         shift_type: None,
         job: jobs,
         starting_date: start_date,
-        parse_error: Some(line_errors),
+        parse_error: if !line_errors.is_empty() {
+            Some(line_errors)
+        } else {
+            None
+        },
     })
 }
 

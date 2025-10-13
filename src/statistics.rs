@@ -77,7 +77,7 @@ impl Statistics {
             match || -> GenResult<String> {
                 let shift_parse = std::fs::read_to_string(&file)?;
                 let shift: Shift = serde_json::from_str(&shift_parse)?;
-                if shift.parse_error.is_some_and(|x| !x.is_empty()) {
+                if shift.parse_error.is_some() {
                     Ok(file.to_string_lossy().to_string())
                 } else {
                     Err("no error".into())
