@@ -53,7 +53,7 @@ impl PdfTimetableCollection {
     }
 
     pub fn get_timetables() -> GenResult<Vec<Self>> {
-        let collections = (*ALL_TIMETABLE_COLLECTIONS.try_read()?).to_vec();
+        let collections = (*ALL_TIMETABLE_COLLECTIONS.read()?).to_vec();
         Ok(collections)
     }
 }

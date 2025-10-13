@@ -43,6 +43,8 @@ static UPCOMING_TIMETABLE_DATE: LazyLock<RwLock<NextTimetableChangeDate>> =
 // List of all valid timetables
 static VALID_TIMETABLES: LazyLock<RwLock<ValidTimetables>> = LazyLock::new(|| RwLock::new(vec![]));
 
+// static CURRENT_TIMETABLE_DATE: LazyLock<RwLock<Date>> = LazyLock::new(|| RwLock::new(vec![]));
+
 const DATE_FORMAT: &[BorrowedFormatItem<'_>] = format_description!["[day]-[month]-[year]"];
 
 pub type GenResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -159,17 +161,12 @@ fn get_valid_timetables(
         Some(date) => date,
         None => OffsetDateTime::now_utc().date(),
     };
-    let mut most_recent_valid_timtable_collection = PdfTimetableCollection::new();
     let mut upcoming_timetables: Vec<Date> = vec![];
     let mut active_timetables: Vec<PdfTimetableCollection> = vec![];
     // Loop over all files in the collection folder
     for timetable_collection in collections {
         //if the current collection date is higher than the last but lower than the system date. Make this the most recent one
-        if timetable_collection.valid_from > most_recent_valid_timtable_collection.valid_from
-            && timetable_collection.valid_from <= current_date
-        {
-            most_recent_valid_timtable_collection = timetable_collection.clone();
-        } else if timetable_collection.valid_from > current_date {
+        if timetable_collection.valid_from > current_date {
             upcoming_timetables.push(timetable_collection.valid_from);
         }
 
@@ -187,22 +184,16 @@ fn get_valid_timetables(
 // Recursive function to find a valid shift
 fn find_shift(
     shift_number: &str,
-    valid_timetables: &Vec<PdfTimetableCollection>,
+    valid_timetables: &mut Vec<PdfTimetableCollection>,
 ) -> Option<(PdfTimetableCollection, ShiftData)> {
-    let shift_number_no_chars: String = shift_number
-        .chars()
-        .filter(|character| !character.is_alphabetic())
-        .collect();
-    let mut valid_timetables = valid_timetables.clone();
-
     // Find the most recent active timetable for this shift
     let current_timetable = match valid_timetables.pop() {
         Some(timetable) => timetable,
         None => return None,
     };
-    match current_timetable.clone().pages.get(&shift_number_no_chars) {
+    match current_timetable.clone().pages.get(shift_number) {
         Some(shift) => Some((current_timetable, shift.clone())),
-        None => find_shift(&shift_number_no_chars, &valid_timetables),
+        None => find_shift(shift_number, valid_timetables),
     }
 }
 
@@ -220,6 +211,7 @@ fn handle_refresh_request() -> HttpResponse {
         }
     }
     load_pdf_and_index(files);
+    _ = PdfTimetableCollection::load_timetables_from_disk();
     return HttpResponse::Accepted().body("Shifts sucessfully indexed");
 }
 
@@ -241,37 +233,39 @@ fn load_timetable_data(date: Option<Date>) -> GenResult<ValidTimetables> {
 }
 
 #[get("/shift/{shift_number}")]
-async fn get_shift(
-    shift_number: web::Path<String>,
-    query: web::Query<ShiftQuery>,
-) -> impl Responder {
-    info!("Got request for {}", shift_number);
+async fn get_shift(request: web::Path<String>, query: web::Query<ShiftQuery>) -> impl Responder {
+    info!("Got request for {}", request);
     let custom_date_option = query
         .date
         .as_ref()
         .and_then(|date_string| Date::parse(date_string, DATE_FORMAT).ok());
-    let shift_number = shift_number.to_uppercase();
-    if shift_number == "REFRESH" {
+
+    let request_uppercase = request.to_uppercase();
+
+    if request_uppercase == "REFRESH" {
         return handle_refresh_request();
-    } else if shift_number == "INDEX" {
+    } else if request_uppercase == "INDEX" {
         return handle_index_request(custom_date_option);
     }
 
-    let valid_timetables = match load_timetable_data(custom_date_option) {
+    let mut valid_timetables = match load_timetable_data(custom_date_option) {
         Ok(result) => result,
         Err(err) => return return_error(err.to_string()),
     };
+    let mut shift_split = request_uppercase.split(".");
+    let shift_number = shift_split.next().unwrap_or(&request_uppercase);
+    let shift_extension_option = shift_split.next();
 
     let shift_prefix: String = shift_number.chars().filter(|c| c.is_alphabetic()).collect();
-
     let numeric_shift_number: String = shift_number.chars().filter(|c| c.is_numeric()).collect();
-    let (shift_collection, shift_data) = match find_shift(&numeric_shift_number, &valid_timetables)
-    {
-        Some(shift) => shift,
-        None => {
-            return HttpResponse::NotFound().body("<h1>Sorry, that shift was not found</h1>");
-        }
-    };
+
+    let (shift_collection, shift_data) =
+        match find_shift(&numeric_shift_number, &mut valid_timetables) {
+            Some(shift) => shift,
+            None => {
+                return HttpResponse::NotFound().body("<h1>Sorry, that shift was not found</h1>");
+            }
+        };
 
     // Check for correct shift prefix
     if !shift_prefix.is_empty() && shift_prefix != shift_data.shift_prefix {
@@ -279,10 +273,10 @@ async fn get_shift(
             .body(format!("<h1>Incorrect shift type specified.</h1> <br><h2>Please remove \"{shift_prefix}\" or change request to \"{}{numeric_shift_number}\"</h2>",shift_data.shift_prefix));
     }
 
-    if let Some(file_extension) = shift_number.split(".").last()
-        && file_extension == "JSON"
+    if let Some(shift_extension) = shift_extension_option
+        && shift_extension == "JSON"
     {
-        info!("Got JSON request for {shift_number}");
+        info!("Got JSON request for {request_uppercase}");
         match find_json_shift(numeric_shift_number, shift_collection.valid_from) {
             Ok(json) => HttpResponse::Ok()
                 .content_type("application/json")
@@ -290,7 +284,7 @@ async fn get_shift(
             Err(err) => return_error(err.to_string()),
         }
     } else {
-        info!("Got PDF request for shift {shift_number}");
+        info!("Got PDF request for shift {request_uppercase}");
         match find_pdf_shift(&shift_collection, shift_data) {
             Ok(bytes) => HttpResponse::Ok()
                 .content_type("application/pdf")
