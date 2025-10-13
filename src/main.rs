@@ -154,8 +154,13 @@ fn save_extracted_shifts(path: PathBuf, shifts: Vec<Shift>) -> GenResult<()> {
     };
     for shift in shifts {
         let shift_json = serde_json::to_string_pretty(&shift)?;
+        let shift_number: String = shift
+            .shift_nr
+            .chars()
+            .filter(|character| character.is_numeric())
+            .collect();
         let mut shift_path = path.clone();
-        shift_path.push(shift.shift_nr);
+        shift_path.push(shift_number);
         shift_path.set_extension("json");
         fs::write(shift_path, shift_json)?;
     }
