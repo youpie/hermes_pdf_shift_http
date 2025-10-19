@@ -235,7 +235,7 @@ fn load_timetable_data(date: Option<Date>) -> GenResult<ValidTimetables> {
         info!("Loading temp timetable");
         Ok(get_valid_timetables(date)?.0)
     } else if let Some(next_timetable_date) = *UPCOMING_TIMETABLE_DATE.read()?
-        && OffsetDateTime::now_utc().date() > next_timetable_date
+        && OffsetDateTime::now_utc().date() >= next_timetable_date
     {
         info!("Loading permanent new timetable");
         let timetable_data = get_valid_timetables(None)?;
