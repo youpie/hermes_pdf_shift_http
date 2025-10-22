@@ -7,7 +7,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use time::Date;
 
-use crate::GenResult;
+use crate::{COLLECTION_PATH, GenResult};
 
 static ALL_TIMETABLE_COLLECTIONS: LazyLock<RwLock<Vec<PdfTimetableCollection>>> =
     LazyLock::new(|| RwLock::new(vec![]));
@@ -28,7 +28,7 @@ pub struct PdfTimetableCollection {
 
 impl PdfTimetableCollection {
     pub fn load_timetables_from_disk() -> GenResult<()> {
-        let collections_on_disk = fs::read_dir("pdf_collection")?;
+        let collections_on_disk = fs::read_dir(COLLECTION_PATH)?;
         let mut collections: Vec<Self> = vec![];
         for file_result in collections_on_disk {
             let file = file_result?;

@@ -88,11 +88,11 @@ pub struct ShiftJob {
 
 impl ShiftJob {
     pub fn empty(&self) -> bool {
-        if (self.job_type == JobType::Unknown
+        if self.job_type == JobType::Unknown
             && self.start.is_none()
             && self.end.is_none()
             && self.start_location.is_none()
-            && self.end_location.is_none())
+            && self.end_location.is_none()
         {
             return true;
         }
