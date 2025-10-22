@@ -10,12 +10,12 @@ use regex::Regex;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::error::Error;
+use std::ffi::OsStr;
 use std::fs::{self};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io;
-use std::path::PathBuf;
-use std::sync::LazyLock;
-use std::sync::RwLock;
+use std::path::{Component, PathBuf};
+use std::time::SystemTime;
 use time::format_description::BorrowedFormatItem;
 use time::macros::format_description;
 use time::{Date, OffsetDateTime};
@@ -39,12 +39,9 @@ type NextTimetableChangeDate = Option<Date>;
 //const PDF_PATH: &str = "Dienstboek";
 const COLLECTION_PATH: &str = "pdf_collection";
 
-// Date of next timetable change
-static UPCOMING_TIMETABLE_DATE: LazyLock<RwLock<NextTimetableChangeDate>> =
-    LazyLock::new(|| RwLock::new(None));
+const BOOK_PATH: &str = "Dienstboek";
 
-// List of all valid timetables
-static VALID_TIMETABLES: LazyLock<RwLock<ValidTimetables>> = LazyLock::new(|| RwLock::new(vec![]));
+const CHANGE_FOLDER_NAME: &str = "Wijzigingen";
 
 // static CURRENT_TIMETABLE_DATE: LazyLock<RwLock<Date>> = LazyLock::new(|| RwLock::new(vec![]));
 
@@ -57,16 +54,47 @@ struct ShiftQuery {
     date: Option<String>, // Optional date query parameter
 }
 
-fn load_pdf_and_index(file_paths: Vec<PathBuf>) {
-    warn!("REMOVING {}", COLLECTION_PATH);
-    _ = PdfTimetableCollection::load_timetables_from_disk();
-    _ = fs::remove_dir_all(COLLECTION_PATH);
-    _ = fs::create_dir(COLLECTION_PATH);
-    _ = file_paths
-        .iter()
-        .enumerate()
-        .map(|path| parse_trip_sheets(path.1.into(), path.0).unwrap())
-        .collect::<Vec<_>>();
+fn get_timetable_files() -> GenResult<Vec<PathBuf>> {
+    let mut trip_files = Vec::new();
+    let mut updated_trip_files = Vec::new();
+    for entry in WalkDir::new(BOOK_PATH).into_iter().filter_map(Result::ok) {
+        let path = entry.path();
+        if path
+            .components()
+            .find(|components| *components == Component::Normal(OsStr::new(CHANGE_FOLDER_NAME)))
+            .is_some()
+        {
+            debug!("Found {path:?}");
+            if path.is_file() {
+                updated_trip_files.push(path.to_path_buf());
+            }
+        } else {
+            if path.is_file() {
+                // Skip directories
+                trip_files.push(path.to_path_buf());
+            }
+        }
+    }
+    updated_trip_files
+        .sort_by_key(|element| get_creation_date(element).unwrap_or(SystemTime::now()));
+    debug!("Changed sheets: {updated_trip_files:#?}");
+    trip_files.extend(updated_trip_files);
+    Ok(trip_files)
+}
+
+fn get_creation_date(path: &PathBuf) -> GenResult<SystemTime> {
+    Ok(fs::metadata(path)?.created()?)
+}
+
+fn load_pdf_and_index() -> GenResult<()> {
+    let files = get_timetable_files()?;
+    fs::remove_dir_all(COLLECTION_PATH)?;
+    fs::create_dir(COLLECTION_PATH)?;
+    for file_path in files.iter().enumerate() {
+        parse_trip_sheets(file_path.1.into(), file_path.0)?;
+    }
+    PdfTimetableCollection::load_timetables_from_disk()?;
+    Ok(())
 }
 
 // Load every PDF and group them
@@ -213,38 +241,9 @@ fn find_shift(
 }
 
 fn handle_refresh_request() -> HttpResponse {
-    let mut files = Vec::new();
-
-    for entry in WalkDir::new("Dienstboek")
-        .into_iter()
-        .filter_map(Result::ok)
-    {
-        let path = entry.path();
-        if path.is_file() {
-            // Skip directories
-            files.push(path.to_path_buf());
-        }
-    }
-    load_pdf_and_index(files);
+    _ = load_pdf_and_index();
 
     return HttpResponse::Accepted().body("Shifts sucessfully indexed");
-}
-
-fn load_timetable_data(date: Option<Date>) -> GenResult<ValidTimetables> {
-    if date.is_some() {
-        info!("Loading temp timetable");
-        Ok(get_valid_timetables(date)?.0)
-    } else if let Some(next_timetable_date) = *UPCOMING_TIMETABLE_DATE.read()?
-        && OffsetDateTime::now_utc().date() >= next_timetable_date
-    {
-        info!("Loading permanent new timetable");
-        let timetable_data = get_valid_timetables(None)?;
-        *UPCOMING_TIMETABLE_DATE.write()? = timetable_data.1.clone();
-        *VALID_TIMETABLES.write()? = timetable_data.0.clone();
-        Ok(timetable_data.0)
-    } else {
-        Ok((*VALID_TIMETABLES.read()?).to_vec())
-    }
 }
 
 #[get("/shift/{shift_number}")]
@@ -266,8 +265,8 @@ async fn get_shift(request: web::Path<String>, query: web::Query<ShiftQuery>) ->
         return handle_stats_request(custom_date_option);
     }
 
-    let mut valid_timetables = match load_timetable_data(custom_date_option) {
-        Ok(result) => result,
+    let mut valid_timetables = match get_valid_timetables(custom_date_option) {
+        Ok(result) => result.0,
         Err(err) => return return_error(err.to_string()),
     };
 
@@ -365,18 +364,9 @@ async fn main() -> std::io::Result<()> {
     pretty_env_logger::init();
     // Load shift data
     info!("Indexing trip sheets");
-    let mut files = Vec::new();
-    for entry in WalkDir::new("Dienstboek")
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
-        let path = entry.path();
-        if path.is_file() {
-            files.push(path.to_path_buf());
-        }
-    }
     // Get the hash of all files in the folder. If anything changes, the hash changes and so it will reindex
     let mut s = DefaultHasher::new();
+    let files = get_timetable_files().expect("Failed to get timetable files");
     files.hash(&mut s);
     let current_hash = s.finish();
     let _previous_hash_option = fs::read("pdf_hash")
@@ -387,24 +377,21 @@ async fn main() -> std::io::Result<()> {
         if let Some(previous_hash) = _previous_hash_option {
             if previous_hash != current_hash {
                 warn!("Hash is changed, reindexing files");
-                load_pdf_and_index(files);
+                load_pdf_and_index();
             } else {
                 info!("Hash is the same, so wont reindex");
             }
         } else {
             error!("Could not find previous hash, reindexing");
-            load_pdf_and_index(files);
+            load_pdf_and_index();
         }
     }
     #[cfg(debug_assertions)]
     {
-        load_pdf_and_index(files);
+        load_pdf_and_index().unwrap();
     }
     let _ = fs::write("pdf_hash", current_hash.to_le_bytes());
     PdfTimetableCollection::load_timetables_from_disk().unwrap();
-    let current_timetable = get_valid_timetables(None).unwrap();
-    *UPCOMING_TIMETABLE_DATE.write().unwrap() = current_timetable.1;
-    *VALID_TIMETABLES.write().unwrap() = current_timetable.0;
 
     HttpServer::new(move || App::new().service(get_shift))
         .bind("0.0.0.0:8080")?
